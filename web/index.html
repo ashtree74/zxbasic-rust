@@ -18,6 +18,14 @@
       image-rendering: pixelated;
       display: block;
       outline: none;
+      /* Subtle bezel + drop shadow so the screen is always visually
+         separated from the BORDER colour around it. Without this, the
+         default Spectrum BORDER 7 / PAPER 7 (both white) merge into one
+         indistinguishable blob — historically correct, but visually
+         confusing in a browser tab. */
+      box-shadow:
+        0 0 0 1px rgba(0, 0, 0, 0.18),
+        0 6px 28px rgba(0, 0, 0, 0.25);
       /* Sized via inline style at runtime to fit the viewport while keeping
          the Spectrum 4:3 aspect ratio (256:192 == 4:3). */
     }
@@ -161,8 +169,13 @@
     // Scale the canvas to fit the viewport, keeping the Spectrum 4:3
     // aspect ratio. The remaining viewport area shows the BORDER colour.
     function resize() {
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
+      // Reserve a minimum margin around the canvas so the BORDER colour
+      // always has visible real estate — even at BORDER 7 (white), where
+      // the bezel + shadow on the canvas still separates the Spectrum
+      // screen from the surrounding chrome.
+      const minMargin = 32;
+      const vw = Math.max(0, window.innerWidth - minMargin * 2);
+      const vh = Math.max(0, window.innerHeight - minMargin * 2);
       const targetAspect = 256 / 192; // 4:3
       let cw, ch;
       if (vw / vh > targetAspect) {

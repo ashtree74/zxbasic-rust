@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <title>zxbasic-rust</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
   <link rel="icon" type="image/png" href="favicon.png">
   <meta name="description" content="The 1982 ZX Spectrum BASIC interpreter, reimplemented in Rust, running natively in your browser via WebAssembly. An AI software-engineering experiment by Frontiers Lab.">
   <meta property="og:title" content="zxbasic-rust">
@@ -31,10 +32,32 @@
       display: flex; align-items: center; justify-content: center;
       transition: background-color 60ms linear;
     }
+    /* Off-screen text field that lets mobile browsers pop up the soft
+       keyboard. We focus it on touch and forward every keystroke through
+       to the Spectrum runtime. font-size 16 px keeps iOS from zooming
+       in when the field gets focus. */
+    #mobile-input {
+      position: fixed;
+      top: -200px;
+      left: 0;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      border: 0;
+      padding: 0;
+      margin: 0;
+      font-size: 16px;
+    }
+
     canvas {
       image-rendering: pixelated;
       display: block;
       outline: none;
+      /* Stop iOS double-tap-to-zoom etc. from interfering with the
+         touchstart-to-focus-mobile-input handler below. */
+      touch-action: manipulation;
+      -webkit-user-select: none;
+      user-select: none;
       /* Sized via inline style at runtime to fit the viewport while keeping
          the Spectrum 4:3 aspect ratio (256:192 == 4:3). The BORDER colour
          in the surrounding margin (set by resize()) is what separates the
@@ -157,6 +180,11 @@
 </head>
 <body>
   <canvas id="screen" width="256" height="192" tabindex="0"></canvas>
+
+  <!-- Off-screen input that opens the soft keyboard on mobile. The
+       Spectrum lives in the canvas; this field exists only so iOS /
+       Android have something focusable to attach their keyboard to. -->
+  <input id="mobile-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" inputmode="text" aria-label="BASIC input">
 
   <img id="brand-mark" src="spectrum-icon.png" alt="" aria-hidden="true">
 
@@ -360,6 +388,76 @@
         if (i < lines.length - 1) sys.feed_enter();
       }
     });
+
+    // Mobile keyboard support. Mobile browsers only show the soft
+    // keyboard when an editable element gets focus from a user gesture,
+    // so we keep an off-screen <input> that we focus on every tap.
+    // Whatever the OS feeds into it is forwarded to the runtime
+    // through the same feed_* API the desktop path uses.
+    const mobileInput = document.getElementById("mobile-input");
+    const isCoarsePointer = matchMedia("(pointer: coarse)").matches;
+
+    function focusMobileKeyboard() {
+      try { mobileInput.focus({ preventScroll: true }); } catch (_) {
+        mobileInput.focus();
+      }
+    }
+
+    document.addEventListener("touchstart", (e) => {
+      // Don't steal focus while the info dialog is open or the user is
+      // tapping the dialog / the i button.
+      if (infoDialog.open) return;
+      const t = e.target;
+      if (t.closest("dialog") || t.closest("#info-btn")) return;
+      // Prevent the synthetic mouseclick + double-tap zoom on iOS.
+      e.preventDefault();
+      focusMobileKeyboard();
+    }, { passive: false });
+
+    // Some characters arrive as `input` events with no matching keydown
+    // on certain mobile keyboards. Forward them and clear the field so it
+    // doesn't accumulate text.
+    mobileInput.addEventListener("input", (e) => {
+      const data = e.data;
+      if (data) {
+        for (const ch of data) {
+          const code = ch.charCodeAt(0);
+          if (code >= 32 && code <= 126) {
+            keyClick();
+            sys.feed_char(code);
+          }
+        }
+      } else if (e.inputType === "deleteContentBackward") {
+        keyClick();
+        sys.feed_backspace();
+      } else if (e.inputType === "insertLineBreak" || e.inputType === "insertParagraph") {
+        keyClick();
+        sys.feed_enter();
+      }
+      mobileInput.value = "";
+    });
+
+    // Enter on mobile usually comes through `keydown`. Mirror the desktop
+    // Enter/Backspace handlers so on-screen keyboards work too.
+    mobileInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        keyClick();
+        sys.feed_enter();
+        e.preventDefault();
+      } else if (e.key === "Backspace") {
+        keyClick();
+        sys.feed_backspace();
+        e.preventDefault();
+      }
+    });
+
+    if (isCoarsePointer) {
+      // On a phone/tablet, try to bring the keyboard up the moment the
+      // page is ready — some platforms need the very first focus call to
+      // come from a gesture, but this lights things up faster on devices
+      // that allow it (e.g. iPad split-keyboard, Android Chrome).
+      window.addEventListener("load", focusMobileKeyboard, { once: true });
+    }
 
     // Info dialog — opens via the floating button, closes via the Close
     // button, the backdrop, or the native Escape key handling.

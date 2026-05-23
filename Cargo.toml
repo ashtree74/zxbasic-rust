@@ -12,7 +12,7 @@ version = "0.0.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Adam Jesionkiewicz <adam@jesion.pl>"]
-repository = "https://github.com/adamjesionkiewicz/zxbasic-rust"
+repository = "https://github.com/ashtree74/zxbasic-rust"
 
 [workspace.dependencies]
 zxbasic-core = { path = "crates/zxbasic-core" }

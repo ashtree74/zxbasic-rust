@@ -68,6 +68,10 @@ The runtime is a state machine, not an emulator. `System` owns everything: the B
 ## Running it
 
 ```
+# Clone with the ROM disassembly submodule:
+git clone --recursive https://github.com/ashtree74/zxbasic-rust.git
+cd zxbasic-rust
+
 # Web build (requires rustup + wasm-pack):
 wasm-pack build crates/zxbasic-web --target web --out-dir ../../web/pkg
 python3 -m http.server 8765 -d web

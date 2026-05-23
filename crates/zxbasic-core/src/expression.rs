@@ -1,4 +1,4 @@
-//! Numeric expression parser + evaluator (MVP-1 subset).
+//! Numeric expression parser + evaluator.
 //!
 //! Grammar (precedence low to high):
 //!
@@ -7,19 +7,38 @@
 //! term   = power  (('*' | '/') power)*
 //! power  = unary  ('^' power)?            // right-associative
 //! unary  = '-' unary | primary
-//! primary = number | '(' expr ')'
+//! primary = number | identifier | '(' expr ')'
 //! number = digit+ ('.' digit+)? ([eE] [+-]? digit+)?
+//! identifier = [A-Za-z] [A-Za-z0-9]*
 //! ```
 //!
-//! Whitespace is skipped between tokens. Strings, variables, and functions
-//! arrive in later MVPs and replace this module's `Primary` arm.
+//! Whitespace is skipped between tokens. String values, functions, and array
+//! subscripts arrive in later MVPs.
 
 use core::iter::Peekable;
 use core::str::Chars;
 
-/// Parse and evaluate `src` as a numeric expression.
+/// Variable lookup. Names are passed in Spectrum-style uppercase.
+pub trait Env {
+    fn get_var(&self, name: &str) -> Option<f64>;
+}
+
+/// An [`Env`] with no variables defined.
+pub struct EmptyEnv;
+impl Env for EmptyEnv {
+    fn get_var(&self, _: &str) -> Option<f64> {
+        None
+    }
+}
+
+/// Parse and evaluate `src` as a numeric expression with no variables.
 pub fn evaluate(src: &str) -> Result<f64, EvalError> {
-    let mut p = Parser::new(src);
+    evaluate_with(src, &EmptyEnv)
+}
+
+/// Parse and evaluate `src` with variable lookups against `env`.
+pub fn evaluate_with(src: &str, env: &dyn Env) -> Result<f64, EvalError> {
+    let mut p = Parser::new(src, env);
     let v = p.expr()?;
     p.skip_ws();
     if p.peek().is_some() {
@@ -38,15 +57,21 @@ pub enum EvalError {
     MissingCloseParen,
     /// Number literal we couldn't parse as f64.
     BadNumber,
+    /// Reference to a name that the environment doesn't know.
+    UnknownVariable(String),
 }
 
-struct Parser<'a> {
+struct Parser<'a, 'e> {
     chars: Peekable<Chars<'a>>,
+    env: &'e dyn Env,
 }
 
-impl<'a> Parser<'a> {
-    fn new(src: &'a str) -> Self {
-        Self { chars: src.chars().peekable() }
+impl<'a, 'e> Parser<'a, 'e> {
+    fn new(src: &'a str, env: &'e dyn Env) -> Self {
+        Self {
+            chars: src.chars().peekable(),
+            env,
+        }
     }
 
     fn peek(&mut self) -> Option<char> {
@@ -145,7 +170,24 @@ impl<'a> Parser<'a> {
                 Ok(v)
             }
             Some(c) if c.is_ascii_digit() || c == '.' => self.number(),
+            Some(c) if c.is_ascii_alphabetic() => self.identifier(),
             _ => Err(EvalError::Nonsense),
+        }
+    }
+
+    fn identifier(&mut self) -> Result<f64, EvalError> {
+        let mut name = String::new();
+        while let Some(c) = self.peek() {
+            if c.is_ascii_alphanumeric() {
+                name.push(c.to_ascii_uppercase());
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        match self.env.get_var(&name) {
+            Some(v) => Ok(v),
+            None => Err(EvalError::UnknownVariable(name)),
         }
     }
 
@@ -196,7 +238,15 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{evaluate, EvalError};
+    use super::{evaluate, evaluate_with, Env, EvalError};
+    use std::collections::HashMap;
+
+    struct MapEnv(HashMap<&'static str, f64>);
+    impl Env for MapEnv {
+        fn get_var(&self, name: &str) -> Option<f64> {
+            self.0.get(name).copied()
+        }
+    }
 
     #[track_caller]
     fn ok(src: &str, want: f64) {
@@ -252,6 +302,23 @@ mod tests {
     fn whitespace_tolerated() {
         ok(" 1 + 2 ", 3.0);
         ok("\t1+  2*3 ", 7.0);
+    }
+
+    #[test]
+    fn variables_resolve() {
+        let env = MapEnv(HashMap::from([("A", 5.0), ("B", 10.0)]));
+        assert_eq!(evaluate_with("A", &env), Ok(5.0));
+        assert_eq!(evaluate_with("A*B+1", &env), Ok(51.0));
+        assert_eq!(evaluate_with("a + b", &env), Ok(15.0)); // case-folded
+    }
+
+    #[test]
+    fn unknown_variable_errors() {
+        let env = MapEnv(HashMap::new());
+        match evaluate_with("X", &env) {
+            Err(EvalError::UnknownVariable(s)) => assert_eq!(s, "X"),
+            other => panic!("want UnknownVariable, got {:?}", other),
+        }
     }
 
     #[test]

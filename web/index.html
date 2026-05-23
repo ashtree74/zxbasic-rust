@@ -13,32 +13,15 @@
     body {
       display: flex; align-items: center; justify-content: center;
       transition: background-color 60ms linear;
-      /* Reserve a permanent BORDER strip around the Spectrum screen on
-         every side. The canvas itself never crosses into this padding,
-         so even at BORDER 7 (white) and PAPER 7 (white) you still see
-         a strip of pure BORDER between the screen and the window edge. */
-      padding: 32px;
-      box-sizing: border-box;
     }
     canvas {
       image-rendering: pixelated;
       display: block;
       outline: none;
-      /* Fit the canvas inside the padded body while preserving the
-         Spectrum 4:3 ratio. CSS `aspect-ratio` keeps the proportions;
-         max-width/max-height keep us inside the BORDER strip. */
-      width: auto;
-      height: auto;
-      max-width: 100%;
-      max-height: 100%;
-      aspect-ratio: 256 / 192;
-      /* Subtle bezel + drop shadow so the screen is always visually
-         separated from the BORDER colour around it. Without this, the
-         default Spectrum BORDER 7 / PAPER 7 (both white) merge into
-         one indistinguishable blob. */
-      box-shadow:
-        0 0 0 1px rgba(0, 0, 0, 0.18),
-        0 6px 28px rgba(0, 0, 0, 0.25);
+      /* Sized via inline style at runtime to fit the viewport while keeping
+         the Spectrum 4:3 aspect ratio (256:192 == 4:3). The BORDER colour
+         in the surrounding margin (set by resize()) is what separates the
+         screen from the browser chrome. */
     }
 
     /* Floating info button — bottom-right of the viewport. Sits on top of
@@ -177,10 +160,37 @@
     const ctx = canvas.getContext("2d");
     canvas.focus();
 
-    // Canvas sizing is now driven purely by CSS (padding on body + the
-    // canvas's max-width / max-height / aspect-ratio). No JS resize hook
-    // means no race conditions where the canvas briefly touches the
-    // window edge before the next event fires.
+    // Scale the canvas to fit the viewport, keeping the Spectrum 4:3
+    // aspect ratio. The remaining viewport area shows the BORDER colour.
+    function resize() {
+      // Reserve a minimum margin around the canvas so the BORDER colour
+      // always has visible real estate — even at BORDER 7 (white), where
+      // the bezel + shadow on the canvas still separates the Spectrum
+      // screen from the surrounding chrome.
+      const minMargin = 32;
+      const vw = Math.max(0, window.innerWidth - minMargin * 2);
+      const vh = Math.max(0, window.innerHeight - minMargin * 2);
+      const targetAspect = 256 / 192; // 4:3
+      let cw, ch;
+      if (vw / vh > targetAspect) {
+        ch = vh;
+        cw = ch * targetAspect;
+      } else {
+        cw = vw;
+        ch = cw / targetAspect;
+      }
+      // Snap to integer pixel sizes that are nice multiples of 256/192 when
+      // possible, to keep the pixel grid crisp at common sizes.
+      const scale = Math.max(1, Math.floor(Math.min(vw / 256, vh / 192)));
+      if (256 * scale <= vw && 192 * scale <= vh) {
+        cw = 256 * scale;
+        ch = 192 * scale;
+      }
+      canvas.style.width  = cw + "px";
+      canvas.style.height = ch + "px";
+    }
+    window.addEventListener("resize", resize);
+    resize();
 
     // Single AudioContext shared by both key clicks and BEEP playback,
     // declared up-front so neither helper trips a temporal-dead-zone

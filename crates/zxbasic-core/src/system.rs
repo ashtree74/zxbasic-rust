@@ -7,7 +7,9 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 
-use crate::display::{Display, CHAR_H, CHAR_W, FRAME_RGBA_LEN};
+use crate::display::{
+    make_attr, Display, CHAR_H, CHAR_W, FRAME_RGBA_LEN,
+};
 use crate::expression::{self, Env};
 use crate::fp_format;
 use crate::program::Program;
@@ -36,6 +38,16 @@ pub struct System {
     /// When `Some`, the next Enter binds the input line to `var` and resumes
     /// RUN at `after_line`. While set, the editor renders a `?` prompt.
     pending_input: Option<PendingInput>,
+    /// Drawing/print attribute state ("permanent" colours in Spectrum
+    /// parlance). Updated by INK/PAPER/BRIGHT/FLASH.
+    current_ink: u8,
+    current_paper: u8,
+    current_bright: bool,
+    current_flash: bool,
+    /// Plot pen position in Spectrum coords (origin at the bottom-left of
+    /// the screen). Updated by PLOT and DRAW.
+    pen_x: i32,
+    pen_y: i32,
 }
 
 struct ForFrame {
@@ -65,9 +77,24 @@ impl System {
             for_stack: Vec::new(),
             current_line: None,
             pending_input: None,
+            current_ink: 0,
+            current_paper: 7,
+            current_bright: false,
+            current_flash: false,
+            pen_x: 0,
+            pen_y: 0,
         };
         sys.redraw_input();
         sys
+    }
+
+    fn current_attr(&self) -> u8 {
+        make_attr(
+            self.current_ink,
+            self.current_paper,
+            self.current_bright,
+            self.current_flash,
+        )
     }
 
     pub const FRAME_RGBA_LEN: usize = FRAME_RGBA_LEN;
@@ -76,7 +103,9 @@ impl System {
         self.display.render_into(out);
     }
 
-    pub fn frame(&mut self) {}
+    pub fn frame(&mut self) {
+        self.display.frame_advance();
+    }
 
     pub fn feed_key(&mut self, key: Key) {
         match key {
@@ -187,7 +216,8 @@ impl System {
                 StepResult::Ok
             }
             "CLS" => {
-                self.display.clear();
+                let attr = self.current_attr();
+                self.display.cls(attr);
                 StepResult::Ok
             }
             "LIST" => self.cmd_list(),
@@ -196,22 +226,210 @@ impl System {
             "FOR" => self.cmd_for(rest),
             "NEXT" => self.cmd_next(rest),
             "INPUT" => self.cmd_input(rest),
+            "INK" => self.cmd_set_colour(rest, ColourKind::Ink),
+            "PAPER" => self.cmd_set_colour(rest, ColourKind::Paper),
+            "BRIGHT" => self.cmd_set_colour(rest, ColourKind::Bright),
+            "FLASH" => self.cmd_set_colour(rest, ColourKind::Flash),
+            "PLOT" => self.cmd_plot(rest),
+            "DRAW" => self.cmd_draw(rest),
+            "CIRCLE" => self.cmd_circle(rest),
             _ => StepResult::Error("Nonsense in BASIC".to_string()),
         }
     }
 
     fn cmd_print(&mut self, args: &str) -> StepResult {
+        // Items separated by `;` (no separator), `,` (TAB to half-screen),
+        // or `'` (newline). A `AT row, col;` or `TAB n;` item moves the
+        // print cursor before the next item. Trailing separator means no
+        // newline; otherwise PRINT ends with a newline.
+        let attr = self.current_attr();
         if args.trim().is_empty() {
-            self.display.println("");
+            self.display.print_with_attr("\n", attr);
             return StepResult::Ok;
         }
+        let items = split_print_items(args);
+        let mut produced_value = false;
+        for item in &items {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            let upper = item.to_ascii_uppercase();
+            if let Some(rest) = upper.strip_prefix("AT") {
+                // AT row, col
+                if !rest.starts_with(|c: char| c.is_ascii_whitespace() || c == '(') {
+                    return self.print_value_item(item, attr).map(|_| {
+                        produced_value = true;
+                    }).err().map(StepResult::Error)
+                        .unwrap_or(StepResult::Ok);
+                }
+                let coord_src = &item[2..];
+                let Some((row_src, col_src)) = coord_src.split_once(',') else {
+                    return StepResult::Error("Nonsense in BASIC".to_string());
+                };
+                let env = SysEnv { vars: &self.vars, prng: &self.prng };
+                let row = expression::evaluate_with(row_src, &env).and_then(|v| v.as_num());
+                let col = expression::evaluate_with(col_src, &env).and_then(|v| v.as_num());
+                match (row, col) {
+                    (Ok(r), Ok(c)) => {
+                        self.display.set_print_cursor(c as usize, r as usize);
+                    }
+                    _ => return StepResult::Error("Nonsense in BASIC".to_string()),
+                }
+                continue;
+            }
+            if let Some(rest) = upper.strip_prefix("TAB") {
+                if !rest.starts_with(|c: char| c.is_ascii_whitespace() || c == '(') {
+                    if let Err(e) = self.print_value_item(item, attr) {
+                        return StepResult::Error(e);
+                    }
+                    produced_value = true;
+                    continue;
+                }
+                let n_src = &item[3..];
+                let env = SysEnv { vars: &self.vars, prng: &self.prng };
+                let Ok(n) = expression::evaluate_with(n_src, &env).and_then(|v| v.as_num()) else {
+                    return StepResult::Error("Nonsense in BASIC".to_string());
+                };
+                let target_col = (n as usize) % CHAR_W;
+                let (cur_col, cur_row) = self.display.print_cursor();
+                if target_col >= cur_col {
+                    let pad: String = " ".repeat(target_col - cur_col);
+                    self.display.print_with_attr(&pad, attr);
+                } else {
+                    // TAB to a column we've passed → newline and move to it.
+                    self.display.print_with_attr("\n", attr);
+                    let _ = cur_row;
+                    let pad: String = " ".repeat(target_col);
+                    self.display.print_with_attr(&pad, attr);
+                }
+                continue;
+            }
+            // Otherwise evaluate as an expression and print its value.
+            if let Err(e) = self.print_value_item(item, attr) {
+                return StepResult::Error(e);
+            }
+            produced_value = true;
+        }
+        // Decide whether to append a newline. If the user ended with a
+        // separator (last char of args trimmed-right is `;` or `,`), no
+        // newline; otherwise newline.
+        let trimmed_end = args.trim_end();
+        let ends_in_sep = trimmed_end.ends_with(';') || trimmed_end.ends_with(',');
+        if !ends_in_sep && produced_value {
+            self.display.print_with_attr("\n", attr);
+        }
+        StepResult::Ok
+    }
+
+    fn print_value_item(&mut self, src: &str, attr: u8) -> Result<(), String> {
         let env = SysEnv { vars: &self.vars, prng: &self.prng };
-        match expression::evaluate_with(args, &env) {
+        match expression::evaluate_with(src, &env) {
             Ok(v) => {
-                self.display.println(&format_value(&v));
+                self.display.print_with_attr(&format_value(&v), attr);
+                Ok(())
+            }
+            Err(_) => Err("Nonsense in BASIC".to_string()),
+        }
+    }
+
+    fn cmd_set_colour(&mut self, args: &str, kind: ColourKind) -> StepResult {
+        let env = SysEnv { vars: &self.vars, prng: &self.prng };
+        let Ok(n) = expression::evaluate_with(args, &env).and_then(|v| v.as_num()) else {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        };
+        let n = n as i32;
+        match kind {
+            ColourKind::Ink => {
+                if !(0..=7).contains(&n) {
+                    return StepResult::Error("Integer out of range".to_string());
+                }
+                self.current_ink = n as u8;
+            }
+            ColourKind::Paper => {
+                if !(0..=7).contains(&n) {
+                    return StepResult::Error("Integer out of range".to_string());
+                }
+                self.current_paper = n as u8;
+            }
+            ColourKind::Bright => {
+                if !(0..=1).contains(&n) {
+                    return StepResult::Error("Integer out of range".to_string());
+                }
+                self.current_bright = n == 1;
+            }
+            ColourKind::Flash => {
+                if !(0..=1).contains(&n) {
+                    return StepResult::Error("Integer out of range".to_string());
+                }
+                self.current_flash = n == 1;
+            }
+        }
+        StepResult::Ok
+    }
+
+    fn cmd_plot(&mut self, args: &str) -> StepResult {
+        let Some((x_src, y_src)) = args.split_once(',') else {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        };
+        let env = SysEnv { vars: &self.vars, prng: &self.prng };
+        let x = expression::evaluate_with(x_src, &env).and_then(|v| v.as_num());
+        let y = expression::evaluate_with(y_src, &env).and_then(|v| v.as_num());
+        match (x, y) {
+            (Ok(x), Ok(y)) => {
+                let x = x as i32;
+                let y = y as i32;
+                let attr = self.current_attr();
+                self.display.plot(x, y, true, attr);
+                self.pen_x = x;
+                self.pen_y = y;
                 StepResult::Ok
             }
-            Err(_) => StepResult::Error("Nonsense in BASIC".to_string()),
+            _ => StepResult::Error("Nonsense in BASIC".to_string()),
+        }
+    }
+
+    fn cmd_draw(&mut self, args: &str) -> StepResult {
+        // DRAW dx, dy  — Spectrum's "arc" third arg is not yet supported.
+        let Some((dx_src, dy_src)) = args.split_once(',') else {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        };
+        let env = SysEnv { vars: &self.vars, prng: &self.prng };
+        let dx = expression::evaluate_with(dx_src, &env).and_then(|v| v.as_num());
+        let dy = expression::evaluate_with(dy_src, &env).and_then(|v| v.as_num());
+        match (dx, dy) {
+            (Ok(dx), Ok(dy)) => {
+                let x1 = self.pen_x + dx as i32;
+                let y1 = self.pen_y + dy as i32;
+                let attr = self.current_attr();
+                self.display.draw_line(self.pen_x, self.pen_y, x1, y1, attr);
+                self.pen_x = x1;
+                self.pen_y = y1;
+                StepResult::Ok
+            }
+            _ => StepResult::Error("Nonsense in BASIC".to_string()),
+        }
+    }
+
+    fn cmd_circle(&mut self, args: &str) -> StepResult {
+        // CIRCLE x, y, r
+        let parts: Vec<&str> = args.splitn(3, ',').collect();
+        if parts.len() != 3 {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        }
+        let env = SysEnv { vars: &self.vars, prng: &self.prng };
+        let x = expression::evaluate_with(parts[0], &env).and_then(|v| v.as_num());
+        let y = expression::evaluate_with(parts[1], &env).and_then(|v| v.as_num());
+        let r = expression::evaluate_with(parts[2], &env).and_then(|v| v.as_num());
+        match (x, y, r) {
+            (Ok(x), Ok(y), Ok(r)) => {
+                let attr = self.current_attr();
+                self.display.draw_circle(x as i32, y as i32, r as i32, attr);
+                self.pen_x = x as i32;
+                self.pen_y = y as i32;
+                StepResult::Ok
+            }
+            _ => StepResult::Error("Nonsense in BASIC".to_string()),
         }
     }
 
@@ -480,6 +698,39 @@ enum StepResult {
     /// The statement (only `INPUT` today) parked the RUN loop in
     /// `pending_input`. The loop must return without printing an error.
     AwaitInput,
+}
+
+enum ColourKind {
+    Ink,
+    Paper,
+    Bright,
+    Flash,
+}
+
+/// Split a PRINT argument list on top-level `;`. Comma is intentionally NOT
+/// a separator here: in Spectrum BASIC `,` *is* the half-screen tab in PRINT,
+/// but it also belongs to the inner arguments of `AT row,col` / `TAB n`.
+/// Treating it as part of items lets `PRINT AT 5,10;"HI"` parse cleanly; the
+/// half-screen tab semantics arrive in MVP-5 alongside a proper PRINT-item
+/// parser. String literals are still respected.
+fn split_print_items(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_str = false;
+    for c in src.chars() {
+        if c == '"' {
+            in_str = !in_str;
+            cur.push(c);
+            continue;
+        }
+        if !in_str && c == ';' {
+            out.push(std::mem::take(&mut cur));
+            continue;
+        }
+        cur.push(c);
+    }
+    out.push(cur);
+    out
 }
 
 /// Split `src` on the first occurrence of `kw` matched as a whole word

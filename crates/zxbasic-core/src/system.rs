@@ -1,8 +1,8 @@
 //! Single-owner state machine for the whole runtime.
 //!
-//! MVP-3b additions on top of MVP-3a: string values and string-typed
-//! identifiers (`A$`, `MSG$`), polymorphic `+` for concatenation, and the
-//! string built-ins (`LEN`, `CODE`, `CHR$`, `STR$`, `VAL`).
+//! MVP-3c additions on top of MVP-3b: `FOR / NEXT / STEP` (with a loop
+//! stack), and `INPUT` (with a state machine that suspends RUN until the
+//! next Enter).
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -29,6 +29,27 @@ pub struct System {
     vars: HashMap<String, Value>,
     program: Program,
     prng: Cell<u64>,
+    for_stack: Vec<ForFrame>,
+    /// Set while RUN is iterating a line; used by `FOR` to capture the
+    /// matching return point for `NEXT`.
+    current_line: Option<u16>,
+    /// When `Some`, the next Enter binds the input line to `var` and resumes
+    /// RUN at `after_line`. While set, the editor renders a `?` prompt.
+    pending_input: Option<PendingInput>,
+}
+
+struct ForFrame {
+    var: String,
+    end: f64,
+    step: f64,
+    /// Line number of the `FOR` statement. `NEXT` resumes execution at the
+    /// first line strictly greater than this.
+    return_line: u16,
+}
+
+struct PendingInput {
+    var: String,
+    after_line: u16,
 }
 
 impl System {
@@ -41,6 +62,9 @@ impl System {
             vars: HashMap::new(),
             program: Program::new(),
             prng: Cell::new(0x9E3779B97F4A7C15),
+            for_stack: Vec::new(),
+            current_line: None,
+            pending_input: None,
         };
         sys.redraw_input();
         sys
@@ -67,15 +91,48 @@ impl System {
             }
             Key::Enter => {
                 let line = std::mem::take(&mut self.input_line);
-                self.dispatch_input(&line);
+                if let Some(pending) = self.pending_input.take() {
+                    self.resolve_pending_input(pending, &line);
+                } else {
+                    self.dispatch_input(&line);
+                }
             }
         }
         self.redraw_input();
     }
 
     fn redraw_input(&mut self) {
-        let cursor_col = self.input_line.chars().count().min(CHAR_W - 1);
-        self.display.print_input(&self.input_line, cursor_col);
+        let prompt = if self.pending_input.is_some() { "?" } else { "" };
+        let combined = format!("{}{}", prompt, self.input_line);
+        let cursor_col = combined.chars().count().min(CHAR_W - 1);
+        self.display.print_input(&combined, cursor_col);
+    }
+
+    fn resolve_pending_input(&mut self, pending: PendingInput, raw: &str) {
+        let parsed: Result<Value, ()> = if is_string_name(&pending.var) {
+            Ok(Value::Str(raw.as_bytes().to_vec()))
+        } else {
+            // Spectrum: numeric INPUT evaluates the typed string as an
+            // expression. Re-use evaluate_with against current vars (so
+            // INPUT can reference other variables, just like real Spectrum).
+            let env = SysEnv {
+                vars: &self.vars,
+                prng: &self.prng,
+            };
+            expression::evaluate_with(raw, &env)
+                .and_then(|v| v.as_num().map(Value::Num))
+                .map_err(|_| ())
+        };
+        match parsed {
+            Ok(v) => {
+                self.vars.insert(pending.var, v);
+                self.resume_run(pending.after_line);
+            }
+            Err(_) => {
+                self.println_error("Nonsense in BASIC");
+                // Drop back to Idle.
+            }
+        }
     }
 
     fn dispatch_input(&mut self, line: &str) {
@@ -88,7 +145,11 @@ impl System {
         } else {
             match self.execute_statement(trimmed) {
                 StepResult::Ok | StepResult::Stop => {}
-                StepResult::Goto(_) => {
+                StepResult::Goto(_) | StepResult::AwaitInput => {
+                    // GOTO and INPUT outside of RUN are meaningless in our
+                    // model. (Real Spectrum permits immediate INPUT in K
+                    // mode; we'll add that with the full editor in MVP-6.)
+                    self.pending_input = None;
                     self.println_error("Nonsense in BASIC");
                 }
                 StepResult::Error(msg) => self.println_error(&msg),
@@ -121,6 +182,8 @@ impl System {
             "NEW" => {
                 self.program.clear();
                 self.vars.clear();
+                self.for_stack.clear();
+                self.pending_input = None;
                 StepResult::Ok
             }
             "CLS" => {
@@ -130,6 +193,9 @@ impl System {
             "LIST" => self.cmd_list(),
             "RUN" => self.cmd_run(rest),
             "IF" => self.cmd_if(rest),
+            "FOR" => self.cmd_for(rest),
+            "NEXT" => self.cmd_next(rest),
+            "INPUT" => self.cmd_input(rest),
             _ => StepResult::Error("Nonsense in BASIC".to_string()),
         }
     }
@@ -206,6 +272,8 @@ impl System {
 
     fn cmd_run(&mut self, args: &str) -> StepResult {
         self.vars.clear();
+        self.for_stack.clear();
+        self.pending_input = None;
         let start = if args.trim().is_empty() {
             0u16
         } else {
@@ -215,14 +283,31 @@ impl System {
                 _ => return StepResult::Error("Nonsense in BASIC".to_string()),
             }
         };
-        let mut pc = self.program.next_at_or_after(start);
+        let pc = self.program.next_at_or_after(start);
+        self.run_loop(pc);
+        StepResult::Ok
+    }
+
+    /// Resume a suspended RUN at `from_line` (smallest existing line ≥ this).
+    /// Called by `feed_key` after `INPUT` has been satisfied.
+    fn resume_run(&mut self, from_line: u16) {
+        let pc = self.program.next_at_or_after(from_line);
+        self.run_loop(pc);
+    }
+
+    /// The actual statement-by-statement RUN loop. Reports its own errors
+    /// directly into the display, and yields cleanly when an `INPUT`
+    /// statement parks the system in `pending_input`.
+    fn run_loop(&mut self, mut pc: Option<u16>) {
         let mut steps = 0usize;
         while let Some(line_no) = pc {
             if steps >= RUN_STEP_LIMIT {
                 self.println_error("D BREAK - CONT repeats");
-                return StepResult::Ok;
+                self.current_line = None;
+                return;
             }
             steps += 1;
+            self.current_line = Some(line_no);
             let stmt = self
                 .program
                 .get(line_no)
@@ -232,17 +317,26 @@ impl System {
                 StepResult::Ok => {
                     pc = self.program.next_at_or_after(line_no.saturating_add(1));
                 }
-                StepResult::Stop => return StepResult::Ok,
+                StepResult::Stop => {
+                    self.current_line = None;
+                    return;
+                }
                 StepResult::Goto(n) => {
                     pc = self.program.next_at_or_after(n);
                 }
+                StepResult::AwaitInput => {
+                    // cmd_input set self.pending_input already.
+                    self.current_line = None;
+                    return;
+                }
                 StepResult::Error(msg) => {
                     self.println_error(&format!("{}, {}:1", msg, line_no));
-                    return StepResult::Ok;
+                    self.current_line = None;
+                    return;
                 }
             }
         }
-        StepResult::Ok
+        self.current_line = None;
     }
 
     fn cmd_if(&mut self, args: &str) -> StepResult {
@@ -273,6 +367,100 @@ impl System {
         }
     }
 
+    fn cmd_for(&mut self, args: &str) -> StepResult {
+        // FOR I = start TO end [STEP step]
+        let Some((lhs, after_eq)) = args.split_once('=') else {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        };
+        let var = normalise_var_name(lhs.trim());
+        if !is_valid_var_name(&var) || is_string_name(&var) {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        }
+        // Split on TO (whole word, case-insensitive).
+        let Some((start_src, after_to)) = split_whole_word_ci(after_eq, "TO") else {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        };
+        let (end_src, step_src) = match split_whole_word_ci(after_to, "STEP") {
+            Some((e, s)) => (e, Some(s)),
+            None => (after_to, None),
+        };
+        let triple = {
+            let env = SysEnv { vars: &self.vars, prng: &self.prng };
+            let s = expression::evaluate_with(start_src, &env).and_then(|v| v.as_num());
+            let e = expression::evaluate_with(end_src, &env).and_then(|v| v.as_num());
+            let st = match step_src {
+                Some(src) => expression::evaluate_with(src, &env).and_then(|v| v.as_num()),
+                None => Ok(1.0),
+            };
+            match (s, e, st) {
+                (Ok(s), Ok(e), Ok(st)) => Some((s, e, st)),
+                _ => None,
+            }
+        };
+        let Some((start, end, step)) = triple else {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        };
+        if step == 0.0 {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        }
+        self.vars.insert(var.clone(), Value::Num(start));
+        let return_line = self.current_line.unwrap_or(0);
+        self.for_stack.push(ForFrame {
+            var,
+            end,
+            step,
+            return_line,
+        });
+        StepResult::Ok
+    }
+
+    fn cmd_next(&mut self, args: &str) -> StepResult {
+        let want = normalise_var_name(args.trim());
+        let idx = if want.is_empty() {
+            self.for_stack.len().checked_sub(1)
+        } else {
+            self.for_stack.iter().rposition(|f| f.var == want)
+        };
+        let Some(idx) = idx else {
+            return StepResult::Error("NEXT without FOR".to_string());
+        };
+        let (var_name, end, step, return_line) = {
+            let f = &self.for_stack[idx];
+            (f.var.clone(), f.end, f.step, f.return_line)
+        };
+        let current = match self.vars.get(&var_name) {
+            Some(Value::Num(n)) => *n,
+            _ => return StepResult::Error("Nonsense in BASIC".to_string()),
+        };
+        let new_val = current + step;
+        self.vars.insert(var_name, Value::Num(new_val));
+        let done = (step > 0.0 && new_val > end) || (step < 0.0 && new_val < end);
+        if done {
+            // Drop this frame and any nested frames above it.
+            self.for_stack.truncate(idx);
+            StepResult::Ok
+        } else {
+            // Resume on the first line strictly after the FOR.
+            StepResult::Goto(return_line.saturating_add(1))
+        }
+    }
+
+    fn cmd_input(&mut self, args: &str) -> StepResult {
+        // INPUT <var>
+        let var = normalise_var_name(args.trim());
+        if !is_valid_var_name(&var) {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        }
+        // If we're running, suspend at the *next* line; if we're immediate,
+        // there is no resume target.
+        let after_line = match self.current_line {
+            Some(n) => n.saturating_add(1),
+            None => return StepResult::Error("Nonsense in BASIC".to_string()),
+        };
+        self.pending_input = Some(PendingInput { var, after_line });
+        StepResult::AwaitInput
+    }
+
     fn println_error(&mut self, msg: &str) {
         self.display.println(msg);
     }
@@ -289,6 +477,43 @@ enum StepResult {
     Stop,
     Goto(u16),
     Error(String),
+    /// The statement (only `INPUT` today) parked the RUN loop in
+    /// `pending_input`. The loop must return without printing an error.
+    AwaitInput,
+}
+
+/// Split `src` on the first occurrence of `kw` matched as a whole word
+/// (case-insensitive), respecting double-quoted string literals. Returns
+/// `Some((before, after))`.
+fn split_whole_word_ci<'a>(src: &'a str, kw: &str) -> Option<(&'a str, &'a str)> {
+    let upper = src.to_ascii_uppercase();
+    let kw_up = kw.to_ascii_uppercase();
+    let mut search_from = 0;
+    loop {
+        let rel = upper[search_from..].find(&kw_up)?;
+        let abs = search_from + rel;
+        let before_ok = abs == 0 || !src.as_bytes()[abs - 1].is_ascii_alphanumeric();
+        let after_idx = abs + kw_up.len();
+        let after_ok =
+            after_idx >= src.len() || !src.as_bytes()[after_idx].is_ascii_alphanumeric();
+        if before_ok && after_ok && !inside_string_literal(src, abs) {
+            return Some((&src[..abs], &src[abs + kw_up.len()..]));
+        }
+        search_from = abs + 1;
+    }
+}
+
+fn inside_string_literal(src: &str, pos: usize) -> bool {
+    let mut in_str = false;
+    for (i, &b) in src.as_bytes().iter().enumerate() {
+        if i >= pos {
+            return in_str;
+        }
+        if b == b'"' {
+            in_str = !in_str;
+        }
+    }
+    in_str
 }
 
 /// Read-only view of System's variables and PRNG, exposing them to the
@@ -593,6 +818,74 @@ mod tests {
         feed_str(&mut sys, "LET A=\"hi\"");
         enter(&mut sys);
         assert!(sys.vars.get("A").is_none());
+    }
+
+    #[test]
+    fn for_next_basic_loop() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "10 LET S=0");
+        enter(&mut sys);
+        feed_str(&mut sys, "20 FOR I=1 TO 5");
+        enter(&mut sys);
+        feed_str(&mut sys, "30 LET S=S+I");
+        enter(&mut sys);
+        feed_str(&mut sys, "40 NEXT I");
+        enter(&mut sys);
+        feed_str(&mut sys, "RUN");
+        enter(&mut sys);
+        // 1+2+3+4+5 = 15
+        assert_eq!(num(&sys, "S"), Some(15.0));
+        // I is left at 6 after the loop terminates.
+        assert_eq!(num(&sys, "I"), Some(6.0));
+    }
+
+    #[test]
+    fn for_next_step() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "10 LET S=0");
+        enter(&mut sys);
+        feed_str(&mut sys, "20 FOR I=10 TO 2 STEP -2");
+        enter(&mut sys);
+        feed_str(&mut sys, "30 LET S=S+I");
+        enter(&mut sys);
+        feed_str(&mut sys, "40 NEXT I");
+        enter(&mut sys);
+        feed_str(&mut sys, "RUN");
+        enter(&mut sys);
+        // 10+8+6+4+2 = 30
+        assert_eq!(num(&sys, "S"), Some(30.0));
+    }
+
+    #[test]
+    fn input_resumes_after_enter() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "10 INPUT N");
+        enter(&mut sys);
+        feed_str(&mut sys, "20 LET R=N*N");
+        enter(&mut sys);
+        feed_str(&mut sys, "RUN");
+        enter(&mut sys);
+        // System should now be parked awaiting input.
+        assert!(sys.pending_input.is_some(), "expected pending input");
+        // User types 7.
+        feed_str(&mut sys, "7");
+        enter(&mut sys);
+        // RUN resumes; N=7, R=49.
+        assert_eq!(num(&sys, "N"), Some(7.0));
+        assert_eq!(num(&sys, "R"), Some(49.0));
+        assert!(sys.pending_input.is_none());
+    }
+
+    #[test]
+    fn input_string_variable() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "10 INPUT N$");
+        enter(&mut sys);
+        feed_str(&mut sys, "RUN");
+        enter(&mut sys);
+        feed_str(&mut sys, "hello world");
+        enter(&mut sys);
+        assert_eq!(s(&sys, "N$").as_deref(), Some("hello world"));
     }
 
     #[test]

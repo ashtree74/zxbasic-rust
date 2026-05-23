@@ -94,6 +94,10 @@ pub struct System {
     /// by `frame()`. Matches Spectrum semantics where `BEEP d, p` blocks
     /// program execution for `d` seconds.
     beep_frames_remaining: u32,
+    /// Same idea as `beep_frames_remaining`, but driven by `PAUSE n`:
+    /// blocks for `n/50` seconds, then resumes. Set to `u32::MAX` to mean
+    /// "PAUSE 0" — wait indefinitely for the user to press a key.
+    pause_frames_remaining: u32,
     /// All DATA values, in program order, with the line each item came
     /// from (so RESTORE N can jump to the first DATA on or after line N).
     /// Rebuilt at every RUN.
@@ -161,6 +165,7 @@ impl System {
             pc: None,
             break_requested: false,
             beep_frames_remaining: 0,
+            pause_frames_remaining: 0,
             audio_cancel_requested: false,
             data_buffer: Vec::new(),
             data_pointer: 0,
@@ -189,6 +194,12 @@ impl System {
         if self.beep_frames_remaining > 0 {
             self.beep_frames_remaining -= 1;
         }
+        // `pause_frames_remaining == u32::MAX` is the sentinel for
+        // `PAUSE 0` (wait indefinitely); only a keypress or BREAK
+        // releases it, not the passage of time.
+        if self.pause_frames_remaining > 0 && self.pause_frames_remaining != u32::MAX {
+            self.pause_frames_remaining -= 1;
+        }
         self.tick_run();
         // Keep the lower screen in sync with the runtime state: hide the
         // cursor while a program is still going, surface the final report
@@ -204,6 +215,12 @@ impl System {
     }
 
     pub fn feed_key(&mut self, key: Key) {
+        // Any keystroke releases a PAUSE — matches Spectrum, where PAUSE
+        // 0 blocks until a key is pressed and a finite PAUSE wakes early
+        // on any keypress. BREAK is handled below as well.
+        if self.pause_frames_remaining > 0 {
+            self.pause_frames_remaining = 0;
+        }
         match key {
             Key::Char(b) if (32..=126).contains(&b) => {
                 self.started_typing = true;
@@ -242,10 +259,13 @@ impl System {
     }
 
     fn redraw_input(&mut self) {
-        // A running program (or a BEEP still playing out) owns the lower
-        // screen — no cursor, no edit prompt. The status line stays blank
-        // until tick_run publishes the final report.
-        if self.pc.is_some() || self.beep_frames_remaining > 0 {
+        // A running program (or a BEEP / PAUSE still in progress) owns
+        // the lower screen — no cursor, no edit prompt. The status line
+        // stays blank until tick_run publishes the final report.
+        if self.pc.is_some()
+            || self.beep_frames_remaining > 0
+            || self.pause_frames_remaining > 0
+        {
             self.display.print_input("", None);
             return;
         }
@@ -409,9 +429,22 @@ impl System {
                 StepResult::Ok
             }
             "GOSUB" => self.cmd_gosub(rest),
+            // Spectrum spells both `GOTO` and `GOSUB` with an optional
+            // space — `GO TO 100`, `GO SUB 100`. Treat the head `GO` as
+            // a two-word keyword by looking at the next word.
+            "GO" => {
+                let (next, rest2) = split_first_word(rest);
+                match next.to_ascii_uppercase().as_str() {
+                    "TO" => self.cmd_goto(rest2),
+                    "SUB" => self.cmd_gosub(rest2),
+                    _ => StepResult::Error("Nonsense in BASIC".to_string()),
+                }
+            }
             "RETURN" => self.cmd_return(),
             "DEF" => self.cmd_def(rest),
             "DIM" => self.cmd_dim(rest),
+            "PAUSE" => self.cmd_pause(rest),
+            "REM" => StepResult::Ok, // comment, ignore the rest of the line
             "CLS" => {
                 let attr = self.current_attr();
                 self.display.cls(attr);
@@ -655,6 +688,27 @@ impl System {
             .iter()
             .position(|d| d.line >= target)
             .unwrap_or(self.data_buffer.len());
+        StepResult::Ok
+    }
+
+    fn cmd_pause(&mut self, args: &str) -> StepResult {
+        let env = self.env_view();
+        let Ok(n) = expression::evaluate_with(args, &env).and_then(|v| v.as_num()) else {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        };
+        let n = n as i64;
+        if n < 0 {
+            return StepResult::Error("Integer out of range".to_string());
+        }
+        if n == 0 {
+            // Spectrum's PAUSE 0: wait until the user touches a key.
+            self.pause_frames_remaining = u32::MAX;
+        } else {
+            // n is in 1/50 s units on the real machine; we approximate
+            // with the host's 60 Hz animation loop.
+            let frames = ((n as f64) * 60.0 / 50.0).ceil() as u32;
+            self.pause_frames_remaining = self.pause_frames_remaining.saturating_add(frames);
+        }
         StepResult::Ok
     }
 
@@ -904,6 +958,11 @@ impl System {
     }
 
     fn cmd_run(&mut self, args: &str) -> StepResult {
+        // RUN clears the screen first, just like c_run → clear_run → cls
+        // in 08_command.asm:1064-1084. Otherwise the LIST output left
+        // over from editing bleeds through PLOT/PRINT output.
+        let attr = self.current_attr();
+        self.display.cls(attr);
         self.vars.clear();
         self.for_stack.clear();
         self.gosub_stack.clear();
@@ -987,7 +1046,7 @@ impl System {
         }
         // While a BEEP is in flight we still listen for BREAK — it must
         // interrupt the tone immediately, like Caps+Space on real hardware.
-        if self.beep_frames_remaining > 0 {
+        if self.beep_frames_remaining > 0 || self.pause_frames_remaining > 0 {
             if self.break_requested {
                 let line_no = self.pc.unwrap_or(0);
                 self.set_report(13, "BREAK into program", line_no, 1);
@@ -996,6 +1055,7 @@ impl System {
                 self.break_requested = false;
                 self.pending_beeps.clear();
                 self.beep_frames_remaining = 0;
+                self.pause_frames_remaining = 0;
                 self.audio_cancel_requested = true;
             }
             return;
@@ -1012,9 +1072,9 @@ impl System {
                 self.audio_cancel_requested = true;
                 return;
             }
-            // If the statement we just executed enqueued a BEEP, stop
-            // pulling more statements until the tone has played out.
-            if self.beep_frames_remaining > 0 {
+            // If the statement we just executed enqueued a BEEP or PAUSE,
+            // stop pulling more statements until the wait is over.
+            if self.beep_frames_remaining > 0 || self.pause_frames_remaining > 0 {
                 return;
             }
             self.last_run_line = line_no;

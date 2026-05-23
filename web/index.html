@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>zxbasic-rust — MVP-0</title>
+  <title>zxbasic-rust — MVP-1</title>
   <style>
     html, body { margin: 0; background: #181818; color: #ddd; font: 14px/1.4 system-ui, sans-serif; }
     body { display: flex; align-items: center; justify-content: center; min-height: 100vh; flex-direction: column; gap: 1rem; }
@@ -11,8 +11,8 @@
   </style>
 </head>
 <body>
-  <canvas id="screen" width="256" height="192" style="width: 512px; height: 384px;"></canvas>
-  <div class="caption">zxbasic-rust · MVP-0 · boot screen</div>
+  <canvas id="screen" width="256" height="192" style="width: 512px; height: 384px;" tabindex="0"></canvas>
+  <div class="caption">zxbasic-rust · MVP-1 · type <code>PRINT 1+2*3</code> + Enter</div>
   <script type="module">
     import init, { System } from "./pkg/zxbasic_web.js";
 
@@ -20,6 +20,7 @@
     const sys = new System();
     const canvas = document.getElementById("screen");
     const ctx = canvas.getContext("2d");
+    canvas.focus();
 
     function frame() {
       const buf = sys.render();
@@ -28,6 +29,22 @@
       requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        sys.feed_enter();
+        e.preventDefault();
+      } else if (e.key === "Backspace") {
+        sys.feed_backspace();
+        e.preventDefault();
+      } else if (e.key.length === 1) {
+        const code = e.key.charCodeAt(0);
+        if (code >= 32 && code <= 126) {
+          sys.feed_char(code);
+          e.preventDefault();
+        }
+      }
+    });
   </script>
 </body>
 </html>

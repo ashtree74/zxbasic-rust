@@ -6,6 +6,8 @@
 
 pub mod charset;
 pub mod display;
+pub mod expression;
+pub mod fp_format;
 pub mod system;
 
 pub use display::{ATTR_H, FRAME_RGBA_LEN, PIXEL_H, PIXEL_W};

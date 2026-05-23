@@ -65,7 +65,7 @@ The `vendor/zxrom` submodule is the [`cheveron/zxrom`](https://github.com/chever
 
 The runtime is a state machine, not an emulator. `System` owns everything: the BASIC program (a `BTreeMap<u16, String>` of stored lines), the variable table, the for-stack, the gosub-stack, the user-fn table, the array table, the audio queue, the program counter, the BREAK flag, the BEEP-blocking frame countdown, the editor input line, and the lower-screen status. The host (browser or native window) calls `feed_key`, `frame`, and `render_into` — that's the entire API. Everything else, including the JS-side audio scheduling and the canvas paint, is a thin glue layer.
 
-## Running it
+## Running it locally
 
 ```
 # Clone with the ROM disassembly submodule:
@@ -80,6 +80,62 @@ python3 -m http.server 8765 -d web
 # Run the full test suite:
 cargo test -p zxbasic-core
 ```
+
+## Deploying to a VPS
+
+The whole runtime is a static site once the WebAssembly bundle has
+been built: an HTML file, a JS shim, and a `.wasm` binary, all under
+`web/`. Any HTTP server that can serve a directory works. On a Linux
+VPS the smallest reasonable setup is:
+
+```bash
+# One-time install of the Rust toolchain (skip if already present):
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"
+rustup target add wasm32-unknown-unknown
+cargo install wasm-pack
+
+# Clone the repo somewhere persistent on the VPS:
+sudo mkdir -p /opt && cd /opt
+sudo git clone --recursive https://github.com/ashtree74/zxbasic-rust.git
+cd zxbasic-rust
+
+# Build the WebAssembly bundle into web/pkg:
+wasm-pack build crates/zxbasic-web --target web --out-dir ../../web/pkg
+```
+
+Then point your existing web server at `/opt/zxbasic-rust/web/`.
+
+For the canonical deployment at `experiments.frontierslab.ai/zxspectrum`,
+nginx looks roughly like:
+
+```nginx
+location /zxspectrum/ {
+    alias /opt/zxbasic-rust/web/;
+    try_files $uri $uri/ /zxspectrum/index.html;
+}
+```
+
+Apache:
+
+```apache
+Alias /zxspectrum /opt/zxbasic-rust/web
+<Directory /opt/zxbasic-rust/web>
+    Require all granted
+</Directory>
+```
+
+To update to the latest commit:
+
+```bash
+cd /opt/zxbasic-rust
+git pull --recurse-submodules
+wasm-pack build crates/zxbasic-web --target web --out-dir ../../web/pkg
+```
+
+That's it — no rsync, no CI secrets, no third-party hosting. Wire
+`git pull` into a cron job or a webhook handler if you want it
+automated.
 
 ## Roadmap
 

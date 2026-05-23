@@ -3,6 +3,13 @@
 <head>
   <meta charset="utf-8">
   <title>zxbasic-rust</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <meta name="description" content="The 1982 ZX Spectrum BASIC interpreter, reimplemented in Rust, running natively in your browser via WebAssembly. An AI software-engineering experiment by Frontiers Lab.">
+  <meta property="og:title" content="zxbasic-rust">
+  <meta property="og:description" content="The 1982 ZX Spectrum BASIC interpreter, reimplemented in Rust, running natively in your browser via WebAssembly. An AI software-engineering experiment by Frontiers Lab.">
+  <meta property="og:image" content="spectrum-icon.png">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary">
   <style>
     html, body {
       margin: 0; padding: 0; height: 100%; overflow: hidden;
@@ -22,6 +29,21 @@
          the Spectrum 4:3 aspect ratio (256:192 == 4:3). The BORDER colour
          in the surrounding margin (set by resize()) is what separates the
          screen from the browser chrome. */
+    }
+
+    /* Sinclair-stripe brand mark in the bottom-left of the viewport, the
+       mirror of the info button. Just an unobtrusive identity cue — no
+       click target. */
+    #brand-mark {
+      position: fixed;
+      left: 16px;
+      bottom: 16px;
+      width: 36px;
+      height: 36px;
+      opacity: 0.7;
+      pointer-events: none;
+      filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.25));
+      z-index: 10;
     }
 
     /* Floating info button — bottom-right of the viewport. Sits on top of
@@ -125,6 +147,8 @@
 </head>
 <body>
   <canvas id="screen" width="256" height="192" tabindex="0"></canvas>
+
+  <img id="brand-mark" src="spectrum-icon.png" alt="" aria-hidden="true">
 
   <button id="info-btn" type="button" aria-label="About this project" title="About this project">i</button>
 

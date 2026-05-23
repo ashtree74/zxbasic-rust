@@ -1,3 +1,5 @@
+<p align="center"><img src="web/spectrum-icon.png" width="120" alt="ZX Spectrum stripe mark"></p>
+
 # zxbasic-rust
 
 **A modern reimplementation of the 1982 ZX Spectrum BASIC interpreter, written in Rust, running natively in your browser via WebAssembly — built end-to-end as an AI software-engineering experiment.**

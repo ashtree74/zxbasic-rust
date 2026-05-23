@@ -21,10 +21,134 @@
       /* Sized via inline style at runtime to fit the viewport while keeping
          the Spectrum 4:3 aspect ratio (256:192 == 4:3). */
     }
+
+    /* Floating info button — bottom-right of the viewport. Sits on top of
+       whatever BORDER colour is currently painted on body. */
+    #info-btn {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.5);
+      background: rgba(0, 0, 0, 0.55);
+      color: #fff;
+      font: 600 18px/1 system-ui, sans-serif;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      backdrop-filter: blur(4px);
+      transition: background 120ms ease, transform 120ms ease;
+      z-index: 10;
+    }
+    #info-btn:hover {
+      background: rgba(0, 0, 0, 0.8);
+      transform: scale(1.08);
+    }
+    #info-btn:focus-visible {
+      outline: 2px solid #fff;
+      outline-offset: 2px;
+    }
+
+    /* About dialog. Uses native <dialog> with a polished, narrow card. */
+    #info-dialog {
+      max-width: 520px;
+      width: calc(100% - 48px);
+      padding: 0;
+      border: none;
+      border-radius: 12px;
+      background: #1b1b1b;
+      color: #e6e6e6;
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+      font: 14px/1.55 system-ui, sans-serif;
+    }
+    #info-dialog::backdrop {
+      background: rgba(0, 0, 0, 0.55);
+      backdrop-filter: blur(3px);
+    }
+    #info-dialog .info-card {
+      padding: 24px 28px 22px;
+    }
+    #info-dialog h2 {
+      margin: 0 0 6px;
+      font-size: 18px;
+      letter-spacing: 0.2px;
+    }
+    #info-dialog .tagline {
+      margin: 0 0 16px;
+      color: #b6b6b6;
+      font-size: 13px;
+    }
+    #info-dialog p {
+      margin: 0 0 12px;
+    }
+    #info-dialog a {
+      color: #79c0ff;
+      text-decoration: none;
+    }
+    #info-dialog a:hover {
+      text-decoration: underline;
+    }
+    #info-dialog hr {
+      border: none;
+      border-top: 1px solid #2c2c2c;
+      margin: 14px 0;
+    }
+    #info-dialog .meta {
+      color: #9a9a9a;
+      font-size: 12px;
+    }
+    #info-dialog .actions {
+      margin-top: 16px;
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    #info-dialog button {
+      background: #2a2a2a;
+      color: #e6e6e6;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font: inherit;
+      cursor: pointer;
+    }
+    #info-dialog button:hover {
+      background: #353535;
+    }
   </style>
 </head>
 <body>
   <canvas id="screen" width="256" height="192" tabindex="0"></canvas>
+
+  <button id="info-btn" type="button" aria-label="About this project" title="About this project">i</button>
+
+  <dialog id="info-dialog" aria-labelledby="info-title">
+    <div class="info-card">
+      <h2 id="info-title">zxbasic-rust</h2>
+      <p class="tagline">A modern Rust reimplementation of the 1982 ZX Spectrum BASIC interpreter, running natively in your browser via WebAssembly.</p>
+
+      <p>Built end-to-end as an <strong>AI software-engineering experiment</strong> in a handful of hours — a demonstration that an experienced AI builder driving a bespoke workflow can decode undocumented decades-old assembly, re-derive its semantics in an idiomatic modern language, and ship it to native + web targets.</p>
+
+      <p>Work that historically took a small specialist team and months of calendar can now be done by one person, in one evening, with the right workflow. The bottleneck has moved from "how many specialists can you hire" to "what workflow do you bring."</p>
+
+      <hr />
+
+      <p class="meta">
+        By <strong><a href="mailto:adam@jesion.pl">Adam Jesionkiewicz</a></strong> at <a href="https://frontierslab.ai" target="_blank" rel="noopener">Frontiers Lab</a><br />
+        Source: <a href="https://github.com/ashtree74/zxbasic-rust" target="_blank" rel="noopener">github.com/ashtree74/zxbasic-rust</a><br />
+        ROM disassembly used as specification: <a href="https://github.com/cheveron/zxrom" target="_blank" rel="noopener">cheveron/zxrom</a> (CC BY-SA 4.0)
+      </p>
+
+      <div class="actions">
+        <button id="info-close" type="button" autofocus>Close</button>
+      </div>
+    </div>
+  </dialog>
+
   <script type="module">
     import init, { System } from "./pkg/zxbasic_web.js";
 
@@ -196,8 +320,34 @@
       }
     });
 
+    // Info dialog — opens via the floating button, closes via the Close
+    // button, the backdrop, or the native Escape key handling.
+    const infoBtn = document.getElementById("info-btn");
+    const infoDialog = document.getElementById("info-dialog");
+    const infoClose = document.getElementById("info-close");
+    infoBtn.addEventListener("click", () => {
+      infoDialog.showModal();
+    });
+    infoClose.addEventListener("click", () => {
+      infoDialog.close();
+      canvas.focus();
+    });
+    // Click on backdrop closes the dialog too.
+    infoDialog.addEventListener("click", (e) => {
+      if (e.target === infoDialog) {
+        infoDialog.close();
+        canvas.focus();
+      }
+    });
+    infoDialog.addEventListener("close", () => {
+      canvas.focus();
+    });
+
     // Keyboard goes to the document so users don't have to click the canvas.
     document.addEventListener("keydown", (e) => {
+      // When the info dialog is open let its native handling take over —
+      // Esc should close it, not BREAK the BASIC runtime.
+      if (infoDialog.open) return;
       // Don't swallow modifier combos like Cmd/Ctrl+V — let the paste event
       // through.
       if (e.metaKey || e.ctrlKey) return;

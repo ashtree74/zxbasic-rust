@@ -18,7 +18,7 @@ It is also, deliberately, **a controlled experiment in what current AI tooling c
 
 For decades, "port the BASIC ROM of a 1982 home computer to a modern stack" has been a textbook example of a project that demands a small team of specialists and a long calendar. You need someone who reads Z80, someone who understands the calculator's bytecode dispatch, someone who can reverse the screen attribute model, someone who can land it on multiple targets, and time — months of it — to align all of that with what real software actually does.
 
-This repository was produced in days, by **one author working in close collaboration with a large language model**, with no pre-existing knowledge of the ROM's internals brought into the conversation. The Z80 source served exactly the role a real ROM specification would: an authoritative reference. The model read it, re-derived semantics in Rust, designed the architecture, wrote the tests, debugged failures from screenshots, refactored when the design no longer fit, and produced a runtime that boots into a screen indistinguishable from a real Spectrum's.
+This repository was built in **a handful of hours**, by **a single experienced AI builder driving a bespoke workflow designed specifically to reconstruct architectures out of assembly-era source** — no pre-existing knowledge of the ROM's internals carried into the room, no prior port to crib from. The 16 KB of commented Z80 served the same role a real hardware specification would: an authoritative reference for *what* the system does. The workflow handled the *how* — reading the source, re-deriving semantics in Rust, picking the architecture, writing the tests, debugging failures from screenshots, refactoring when the design stopped fitting, and ultimately producing a runtime that boots into a screen indistinguishable from a real Spectrum's.
 
 That is the demonstration. The interesting thing isn't that "the AI wrote some code." The interesting thing is the *kind* of code:
 
@@ -26,9 +26,9 @@ That is the demonstration. The interesting thing isn't that "the AI wrote some c
 * **Re-implementing semantics across a 40-year language gap.** Translating side-effecty Z80 with shared system variables into an idiomatic Rust state machine with explicit ownership. Choosing where to mirror Spectrum quirks pixel-for-pixel (the `©` at character 0x7F, the `0 OK, 0:1` report format, the FLASH-attribute cursor pulse) and where modern abstractions are obviously better (the audio queue, the frame-driven scheduler that doesn't freeze the browser tab during an infinite loop).
 * **Targeting platforms the original couldn't reach.** The same Rust core compiles to a native desktop binary and to WebAssembly. The browser frontend is 16 KB of unoptimised `.wasm`, draws straight to a `<canvas>` via `ImageData`, and synthesises the BEEP through WebAudio.
 
-This is **work that genuinely was out of reach for an individual engineer at any reasonable cost**. It isn't anymore.
+This is **work that genuinely was out of reach for an individual engineer at any reasonable cost**. With the right workflow, it isn't anymore — not in months of effort, not even in days. In hours.
 
-That shift is bigger than any one project. It's the same kind of moment as the first time compilers replaced hand-written machine code, or the first time a high-level web framework replaced bespoke CGI. The threshold of "things one person can credibly ship" just moved, and it moved a long way.
+That shift is bigger than any one project. It's the same kind of moment as the first time compilers replaced hand-written machine code, or the first time a high-level web framework replaced bespoke CGI. The threshold of "things one person can credibly ship" just moved, and it moved a long way. The bottleneck is no longer how many specialists you can hire — it's the workflow you bring.
 
 This repository is a small, concrete data point on that curve.
 

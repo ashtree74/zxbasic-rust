@@ -4,6 +4,8 @@
 
 🟢 **Live:** <https://experiments.frontierslab.ai/zxspectrum>
 
+![Boot screen — © 1982 Sinclair Research Ltd, exactly as the original ROM puts it on the lower screen](docs/screenshots/boot.png)
+
 ---
 
 ## What this is
@@ -31,6 +33,16 @@ This is **work that genuinely was out of reach for an individual engineer at any
 That shift is bigger than any one project. It's the same kind of moment as the first time compilers replaced hand-written machine code, or the first time a high-level web framework replaced bespoke CGI. The threshold of "things one person can credibly ship" just moved, and it moved a long way. The bottleneck is no longer how many specialists you can hire — it's the workflow you bring.
 
 This repository is a small, concrete data point on that curve.
+
+## In action
+
+A short BASIC program from the original Spectrum manual — the SIN-curve "apple" graphic — typed into the editor and then run:
+
+![Listing of the SIN-curve apple program](docs/screenshots/listing.png)
+
+![The same program after RUN: PLOT a+110, s-15 over nested FOR loops draws the apple wave on a BORDER 1 background](docs/screenshots/plot.png)
+
+`BORDER 1` paints the surrounding strip blue, `RUN` clears the upper screen and walks the nested FOR loops, every `PLOT` lands on the screen in real time, and `PAUSE 0` parks the runtime until you press a key — exactly the cadence of a real 1982 machine.
 
 ## What it does today
 

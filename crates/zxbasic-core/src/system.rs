@@ -32,6 +32,12 @@ pub struct System {
     program: Program,
     prng: Cell<u64>,
     for_stack: Vec<ForFrame>,
+    /// GOSUB return stack: line number of the caller's GOSUB statement.
+    /// RETURN pops and resumes at the next line after that.
+    gosub_stack: Vec<u16>,
+    /// User-defined functions (DEF FN). Single-parameter; body stored as raw
+    /// source so RUN can re-parse it under each call's local scope.
+    user_fns: HashMap<String, UserFn>,
     /// Set while RUN is iterating a line; used by `FOR` to capture the
     /// matching return point for `NEXT`.
     current_line: Option<u16>,
@@ -48,6 +54,12 @@ pub struct System {
     /// the screen). Updated by PLOT and DRAW.
     pen_x: i32,
     pen_y: i32,
+}
+
+#[derive(Clone)]
+struct UserFn {
+    param: String,
+    body: String,
 }
 
 struct ForFrame {
@@ -75,6 +87,8 @@ impl System {
             program: Program::new(),
             prng: Cell::new(0x9E3779B97F4A7C15),
             for_stack: Vec::new(),
+            gosub_stack: Vec::new(),
+            user_fns: HashMap::new(),
             current_line: None,
             pending_input: None,
             current_ink: 0,
@@ -144,10 +158,7 @@ impl System {
             // Spectrum: numeric INPUT evaluates the typed string as an
             // expression. Re-use evaluate_with against current vars (so
             // INPUT can reference other variables, just like real Spectrum).
-            let env = SysEnv {
-                vars: &self.vars,
-                prng: &self.prng,
-            };
+            let env = self.env_view();
             expression::evaluate_with(raw, &env)
                 .and_then(|v| v.as_num().map(Value::Num))
                 .map_err(|_| ())
@@ -212,9 +223,14 @@ impl System {
                 self.program.clear();
                 self.vars.clear();
                 self.for_stack.clear();
+                self.gosub_stack.clear();
+                self.user_fns.clear();
                 self.pending_input = None;
                 StepResult::Ok
             }
+            "GOSUB" => self.cmd_gosub(rest),
+            "RETURN" => self.cmd_return(),
+            "DEF" => self.cmd_def(rest),
             "CLS" => {
                 let attr = self.current_attr();
                 self.display.cls(attr);
@@ -267,7 +283,7 @@ impl System {
                 let Some((row_src, col_src)) = coord_src.split_once(',') else {
                     return StepResult::Error("Nonsense in BASIC".to_string());
                 };
-                let env = SysEnv { vars: &self.vars, prng: &self.prng };
+                let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
                 let row = expression::evaluate_with(row_src, &env).and_then(|v| v.as_num());
                 let col = expression::evaluate_with(col_src, &env).and_then(|v| v.as_num());
                 match (row, col) {
@@ -287,7 +303,7 @@ impl System {
                     continue;
                 }
                 let n_src = &item[3..];
-                let env = SysEnv { vars: &self.vars, prng: &self.prng };
+                let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
                 let Ok(n) = expression::evaluate_with(n_src, &env).and_then(|v| v.as_num()) else {
                     return StepResult::Error("Nonsense in BASIC".to_string());
                 };
@@ -323,7 +339,7 @@ impl System {
     }
 
     fn print_value_item(&mut self, src: &str, attr: u8) -> Result<(), String> {
-        let env = SysEnv { vars: &self.vars, prng: &self.prng };
+        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
         match expression::evaluate_with(src, &env) {
             Ok(v) => {
                 self.display.print_with_attr(&format_value(&v), attr);
@@ -334,7 +350,7 @@ impl System {
     }
 
     fn cmd_set_colour(&mut self, args: &str, kind: ColourKind) -> StepResult {
-        let env = SysEnv { vars: &self.vars, prng: &self.prng };
+        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
         let Ok(n) = expression::evaluate_with(args, &env).and_then(|v| v.as_num()) else {
             return StepResult::Error("Nonsense in BASIC".to_string());
         };
@@ -372,7 +388,7 @@ impl System {
         let Some((x_src, y_src)) = args.split_once(',') else {
             return StepResult::Error("Nonsense in BASIC".to_string());
         };
-        let env = SysEnv { vars: &self.vars, prng: &self.prng };
+        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
         let x = expression::evaluate_with(x_src, &env).and_then(|v| v.as_num());
         let y = expression::evaluate_with(y_src, &env).and_then(|v| v.as_num());
         match (x, y) {
@@ -394,7 +410,7 @@ impl System {
         let Some((dx_src, dy_src)) = args.split_once(',') else {
             return StepResult::Error("Nonsense in BASIC".to_string());
         };
-        let env = SysEnv { vars: &self.vars, prng: &self.prng };
+        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
         let dx = expression::evaluate_with(dx_src, &env).and_then(|v| v.as_num());
         let dy = expression::evaluate_with(dy_src, &env).and_then(|v| v.as_num());
         match (dx, dy) {
@@ -417,7 +433,7 @@ impl System {
         if parts.len() != 3 {
             return StepResult::Error("Nonsense in BASIC".to_string());
         }
-        let env = SysEnv { vars: &self.vars, prng: &self.prng };
+        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
         let x = expression::evaluate_with(parts[0], &env).and_then(|v| v.as_num());
         let y = expression::evaluate_with(parts[1], &env).and_then(|v| v.as_num());
         let r = expression::evaluate_with(parts[2], &env).and_then(|v| v.as_num());
@@ -441,7 +457,7 @@ impl System {
         if name.is_empty() || !is_valid_var_name(&name) {
             return StepResult::Error("Nonsense in BASIC".to_string());
         }
-        let env = SysEnv { vars: &self.vars, prng: &self.prng };
+        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
         match expression::evaluate_with(rhs, &env) {
             Ok(v) => {
                 // Spectrum type rule: a string variable (name ends with `$`)
@@ -461,7 +477,7 @@ impl System {
     }
 
     fn cmd_goto(&mut self, args: &str) -> StepResult {
-        let env = SysEnv { vars: &self.vars, prng: &self.prng };
+        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
         let v = match expression::evaluate_with(args, &env) {
             Ok(v) => match v.as_num() {
                 Ok(n) => n,
@@ -491,11 +507,12 @@ impl System {
     fn cmd_run(&mut self, args: &str) -> StepResult {
         self.vars.clear();
         self.for_stack.clear();
+        self.gosub_stack.clear();
         self.pending_input = None;
         let start = if args.trim().is_empty() {
             0u16
         } else {
-            let env = SysEnv { vars: &self.vars, prng: &self.prng };
+            let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
             match expression::evaluate_with(args, &env).and_then(|v| v.as_num()) {
                 Ok(v) if (0.0..=65535.0).contains(&v) => v as u16,
                 _ => return StepResult::Error("Nonsense in BASIC".to_string()),
@@ -559,10 +576,7 @@ impl System {
 
     fn cmd_if(&mut self, args: &str) -> StepResult {
         let parsed = {
-            let env = SysEnv {
-                vars: &self.vars,
-                prng: &self.prng,
-            };
+            let env = self.env_view();
             expression::evaluate_until_keyword(args, "THEN", &env)
         };
         match parsed {
@@ -603,7 +617,7 @@ impl System {
             None => (after_to, None),
         };
         let triple = {
-            let env = SysEnv { vars: &self.vars, prng: &self.prng };
+            let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
             let s = expression::evaluate_with(start_src, &env).and_then(|v| v.as_num());
             let e = expression::evaluate_with(end_src, &env).and_then(|v| v.as_num());
             let st = match step_src {
@@ -660,6 +674,72 @@ impl System {
         } else {
             // Resume on the first line strictly after the FOR.
             StepResult::Goto(return_line.saturating_add(1))
+        }
+    }
+
+    fn cmd_gosub(&mut self, args: &str) -> StepResult {
+        let env = self.env_view();
+        let target = match expression::evaluate_with(args, &env).and_then(|v| v.as_num()) {
+            Ok(v) if (0.0..=65535.0).contains(&v) => v as u16,
+            _ => return StepResult::Error("Nonsense in BASIC".to_string()),
+        };
+        // Push the line we're calling FROM (so RETURN can resume at line+1).
+        let caller = self.current_line.unwrap_or(0);
+        self.gosub_stack.push(caller);
+        StepResult::Goto(target)
+    }
+
+    fn cmd_return(&mut self) -> StepResult {
+        let Some(caller) = self.gosub_stack.pop() else {
+            return StepResult::Error("RETURN without GOSUB".to_string());
+        };
+        StepResult::Goto(caller.saturating_add(1))
+    }
+
+    fn cmd_def(&mut self, args: &str) -> StepResult {
+        // DEF FN <name>(<param>) = <expr>
+        let upper = args.trim_start().to_ascii_uppercase();
+        let rest = match upper.strip_prefix("FN") {
+            Some(r) if r.starts_with(|c: char| c.is_ascii_whitespace()) => {
+                &args.trim_start()[2..]
+            }
+            _ => return StepResult::Error("Nonsense in BASIC".to_string()),
+        };
+        let rest = rest.trim_start();
+        let (name_part, after_name) = split_identifier(rest);
+        let name = name_part.to_ascii_uppercase();
+        if name.is_empty() {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        }
+        let after = after_name.trim_start();
+        // `(param)`
+        let Some(after_open) = after.strip_prefix('(') else {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        };
+        let Some(close_idx) = after_open.find(')') else {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        };
+        let param = after_open[..close_idx].trim().to_ascii_uppercase();
+        if !is_valid_var_name(&param) {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        }
+        let after_paren = after_open[close_idx + 1..].trim_start();
+        let Some(body) = after_paren.strip_prefix('=') else {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        };
+        let body = body.trim().to_string();
+        if body.is_empty() {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        }
+        self.user_fns.insert(name, UserFn { param, body });
+        StepResult::Ok
+    }
+
+    fn env_view(&self) -> SysEnv<'_> {
+        SysEnv {
+            vars: &self.vars,
+            prng: &self.prng,
+            user_fns: &self.user_fns,
         }
     }
 
@@ -772,10 +852,20 @@ fn inside_string_literal(src: &str, pos: usize) -> bool {
 struct SysEnv<'a> {
     vars: &'a HashMap<String, Value>,
     prng: &'a Cell<u64>,
+    user_fns: &'a HashMap<String, UserFn>,
 }
 impl<'a> Env for SysEnv<'a> {
     fn get_var(&self, name: &str) -> Option<Value> {
         self.vars.get(name).cloned()
+    }
+    fn call_user_fn(&self, name: &str, arg: Value) -> Option<Value> {
+        let def = self.user_fns.get(name)?;
+        let local = UserFnEnv {
+            parent: self,
+            param: &def.param,
+            value: arg,
+        };
+        expression::evaluate_with(&def.body, &local).ok()
     }
     fn call_fn(&self, name: &str, args: &[Value]) -> Option<Value> {
         Some(match (name, args) {
@@ -815,6 +905,37 @@ impl<'a> Env for SysEnv<'a> {
             _ => return None,
         })
     }
+}
+
+/// Local scope wrapper for a single DEF FN call: the named parameter
+/// shadows the outer environment for the duration of the body evaluation.
+struct UserFnEnv<'a> {
+    parent: &'a dyn Env,
+    param: &'a str,
+    value: Value,
+}
+impl<'a> Env for UserFnEnv<'a> {
+    fn get_var(&self, name: &str) -> Option<Value> {
+        if name == self.param {
+            Some(self.value.clone())
+        } else {
+            self.parent.get_var(name)
+        }
+    }
+    fn call_fn(&self, name: &str, args: &[Value]) -> Option<Value> {
+        self.parent.call_fn(name, args)
+    }
+    fn call_user_fn(&self, name: &str, arg: Value) -> Option<Value> {
+        self.parent.call_user_fn(name, arg)
+    }
+}
+
+fn split_identifier(s: &str) -> (&str, &str) {
+    let end = s
+        .char_indices()
+        .find(|(_, c)| !(c.is_ascii_alphanumeric() || *c == '$'))
+        .map_or(s.len(), |(i, _)| i);
+    (&s[..end], &s[end..])
 }
 
 fn rnd_next(state: &Cell<u64>) -> f64 {
@@ -1069,6 +1190,60 @@ mod tests {
         feed_str(&mut sys, "LET A=\"hi\"");
         enter(&mut sys);
         assert!(sys.vars.get("A").is_none());
+    }
+
+    #[test]
+    fn gosub_return_visits_subroutine() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "10 LET A=0");
+        enter(&mut sys);
+        feed_str(&mut sys, "20 GOSUB 100");
+        enter(&mut sys);
+        feed_str(&mut sys, "30 STOP");
+        enter(&mut sys);
+        feed_str(&mut sys, "100 LET A=99");
+        enter(&mut sys);
+        feed_str(&mut sys, "110 RETURN");
+        enter(&mut sys);
+        feed_str(&mut sys, "RUN");
+        enter(&mut sys);
+        assert_eq!(num(&sys, "A"), Some(99.0));
+    }
+
+    #[test]
+    fn return_without_gosub_errors() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "10 RETURN");
+        enter(&mut sys);
+        feed_str(&mut sys, "RUN");
+        enter(&mut sys);
+        // No assertion on display, just check we didn't panic.
+        // RETURN without GOSUB → error printed, no infinite loop.
+        assert!(sys.gosub_stack.is_empty());
+    }
+
+    #[test]
+    fn def_fn_callable() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "DEF FN F(X)=X*X+1");
+        enter(&mut sys);
+        feed_str(&mut sys, "LET A=FN F(5)");
+        enter(&mut sys);
+        assert_eq!(num(&sys, "A"), Some(26.0));
+    }
+
+    #[test]
+    fn def_fn_local_scope() {
+        // The parameter shadows any outer variable of the same name.
+        let mut sys = System::new();
+        feed_str(&mut sys, "LET X=100");
+        enter(&mut sys);
+        feed_str(&mut sys, "DEF FN G(X)=X+1");
+        enter(&mut sys);
+        feed_str(&mut sys, "LET A=FN G(7)");
+        enter(&mut sys);
+        assert_eq!(num(&sys, "A"), Some(8.0)); // not 101
+        assert_eq!(num(&sys, "X"), Some(100.0)); // outer X intact
     }
 
     #[test]

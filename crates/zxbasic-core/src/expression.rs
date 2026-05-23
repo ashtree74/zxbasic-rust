@@ -37,6 +37,11 @@ pub trait Env {
     fn call_fn(&self, _name: &str, _args: &[Value]) -> Option<Value> {
         None
     }
+
+    /// Call a user-defined function (`DEF FN <name>`). Default: none.
+    fn call_user_fn(&self, _name: &str, _arg: Value) -> Option<Value> {
+        None
+    }
 }
 
 /// An [`Env`] with no variables and no functions.
@@ -284,7 +289,9 @@ impl<'a, 'e> Parser<'a, 'e> {
         match self.peek() {
             Some(c) if c.is_ascii_alphabetic() => {
                 let name = self.read_identifier();
-                if is_func_0arg(&name) {
+                if name == "FN" {
+                    self.user_fn_call()
+                } else if is_func_0arg(&name) {
                     self.env
                         .call_fn(&name, &[])
                         .ok_or(EvalError::UnknownFunction(name))
@@ -301,6 +308,28 @@ impl<'a, 'e> Parser<'a, 'e> {
             }
             _ => self.primary(),
         }
+    }
+
+    /// Parse a `FN <name>(<arg>)` call after the `FN` keyword has been
+    /// consumed. Spectrum requires the parens.
+    fn user_fn_call(&mut self) -> Result<Value, EvalError> {
+        self.skip_ws();
+        let fn_name = self.read_identifier();
+        if fn_name.is_empty() {
+            return Err(EvalError::Nonsense);
+        }
+        self.skip_ws();
+        if self.peek() != Some('(') {
+            return Err(EvalError::Nonsense);
+        }
+        self.bump();
+        let arg = self.expr()?;
+        if !self.eat(')') {
+            return Err(EvalError::MissingCloseParen);
+        }
+        self.env
+            .call_user_fn(&fn_name, arg)
+            .ok_or(EvalError::UnknownFunction(fn_name))
     }
 
     fn primary(&mut self) -> Result<Value, EvalError> {

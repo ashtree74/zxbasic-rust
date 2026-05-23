@@ -94,6 +94,12 @@ pub struct System {
     /// by `frame()`. Matches Spectrum semantics where `BEEP d, p` blocks
     /// program execution for `d` seconds.
     beep_frames_remaining: u32,
+    /// All DATA values, in program order, with the line each item came
+    /// from (so RESTORE N can jump to the first DATA on or after line N).
+    /// Rebuilt at every RUN.
+    data_buffer: Vec<DataItem>,
+    /// Index of the next item READ should consume.
+    data_pointer: usize,
     /// One-shot flag: when set, the host should cancel any sounds that are
     /// currently playing. Drained by `take_audio_cancel`.
     audio_cancel_requested: bool,
@@ -117,6 +123,12 @@ struct ForFrame {
 struct PendingInput {
     var: String,
     after_line: u16,
+}
+
+#[derive(Clone)]
+struct DataItem {
+    value: Value,
+    line: u16,
 }
 
 impl System {
@@ -150,6 +162,8 @@ impl System {
             break_requested: false,
             beep_frames_remaining: 0,
             audio_cancel_requested: false,
+            data_buffer: Vec::new(),
+            data_pointer: 0,
         };
         sys.redraw_input();
         sys
@@ -418,6 +432,11 @@ impl System {
             "CIRCLE" => self.cmd_circle(rest),
             "BORDER" => self.cmd_border(rest),
             "BEEP" => self.cmd_beep(rest),
+            // DATA is consumed before RUN starts; encountering it during
+            // execution is a no-op (Spectrum behaves the same way).
+            "DATA" => StepResult::Ok,
+            "READ" => self.cmd_read(rest),
+            "RESTORE" => self.cmd_restore(rest),
             _ => StepResult::Error("Nonsense in BASIC".to_string()),
         }
     }
@@ -557,6 +576,55 @@ impl System {
     /// currently playing sounds (called by JS after BREAK).
     pub fn take_audio_cancel(&mut self) -> bool {
         std::mem::replace(&mut self.audio_cancel_requested, false)
+    }
+
+    fn cmd_read(&mut self, args: &str) -> StepResult {
+        // READ <var>[, <var>...] — pull values out of the DATA pool, in
+        // the order they were declared.
+        for raw_name in split_top_level_commas(args) {
+            let name = normalise_var_name(raw_name.trim());
+            if !is_valid_var_name(&name) {
+                return StepResult::Error("Nonsense in BASIC".to_string());
+            }
+            let Some(item) = self.data_buffer.get(self.data_pointer).cloned() else {
+                return StepResult::Error("DATA exhausted".to_string());
+            };
+            let typed_ok = matches!(
+                (&item.value, is_string_name(&name)),
+                (Value::Str(_), true) | (Value::Num(_), false)
+            );
+            if !typed_ok {
+                return StepResult::Error("Nonsense in BASIC".to_string());
+            }
+            self.vars.insert(name, item.value);
+            self.data_pointer += 1;
+        }
+        StepResult::Ok
+    }
+
+    fn cmd_restore(&mut self, args: &str) -> StepResult {
+        let args = args.trim();
+        if args.is_empty() {
+            self.data_pointer = 0;
+            return StepResult::Ok;
+        }
+        let env = self.env_view();
+        let Ok(n) = expression::evaluate_with(args, &env).and_then(|v| v.as_num()) else {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        };
+        let target = n as i64;
+        if !(0..=65535).contains(&target) {
+            return StepResult::Error("Integer out of range".to_string());
+        }
+        let target = target as u16;
+        // First DATA item on or after `target`. If none, point past the
+        // end so the next READ raises "DATA exhausted".
+        self.data_pointer = self
+            .data_buffer
+            .iter()
+            .position(|d| d.line >= target)
+            .unwrap_or(self.data_buffer.len());
+        StepResult::Ok
     }
 
     fn cmd_beep(&mut self, args: &str) -> StepResult {
@@ -810,6 +878,50 @@ impl System {
         self.gosub_stack.clear();
         self.arrays.clear();
         self.pending_input = None;
+        // Pre-scan every program line for DATA so READ can pull values in
+        // order without re-walking the source. Mirrors Spectrum, which
+        // collects DATA at the start of RUN.
+        self.data_buffer.clear();
+        self.data_pointer = 0;
+        let lines: Vec<(u16, String)> = self
+            .program
+            .iter()
+            .map(|(n, s)| (n, s.to_string()))
+            .collect();
+        for (line_no, text) in lines {
+            let mut rest = text.as_str();
+            loop {
+                let (this, next) = split_top_level_colon(rest);
+                let stmt = this.trim_start();
+                let upper = first_word_uppercase(stmt);
+                if upper == "DATA" {
+                    let body = &stmt[upper.len()..];
+                    // Evaluate each comma-separated item with a borrow-
+                    // limited scope, then extend the buffer in one go so
+                    // we don't hold env_view while mutating self.
+                    let items: Vec<DataItem> = {
+                        let env = self.env_view();
+                        let mut acc = Vec::new();
+                        for item_src in split_top_level_commas(body) {
+                            let item = item_src.trim();
+                            if item.is_empty() {
+                                continue;
+                            }
+                            match expression::evaluate_with(item, &env) {
+                                Ok(v) => acc.push(DataItem { value: v, line: line_no }),
+                                Err(_) => break,
+                            }
+                        }
+                        acc
+                    };
+                    self.data_buffer.extend(items);
+                }
+                if next.is_empty() {
+                    break;
+                }
+                rest = next;
+            }
+        }
         let start = if args.trim().is_empty() {
             0u16
         } else {
@@ -1289,6 +1401,37 @@ impl<'a> Env for UserFnEnv<'a> {
     fn call_user_fn(&self, name: &str, arg: Value) -> Option<Value> {
         self.parent.call_user_fn(name, arg)
     }
+}
+
+/// Split a string on top-level commas (outside `"..."` and `(...)`).
+/// Used by DATA/READ argument lists.
+fn split_top_level_commas(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0i32;
+    let mut in_str = false;
+    for c in s.chars() {
+        if c == '"' {
+            in_str = !in_str;
+            cur.push(c);
+        } else if !in_str {
+            if c == '(' {
+                depth += 1;
+                cur.push(c);
+            } else if c == ')' {
+                depth -= 1;
+                cur.push(c);
+            } else if c == ',' && depth == 0 {
+                out.push(std::mem::take(&mut cur));
+            } else {
+                cur.push(c);
+            }
+        } else {
+            cur.push(c);
+        }
+    }
+    out.push(cur);
+    out
 }
 
 /// Find the byte index of the `=` that separates an assignment's LHS from

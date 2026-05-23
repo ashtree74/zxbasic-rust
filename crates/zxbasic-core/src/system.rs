@@ -60,6 +60,20 @@ pub struct System {
     /// Colour of the screen border (BORDER 0..7). Default 7 (white) to
     /// match Spectrum boot.
     current_border: u8,
+    /// Lower-screen status line. On boot this holds the Spectrum copyright;
+    /// after every immediate command or RUN it becomes the standard
+    /// `<code> <message>, <line>:<stmt>` report. Cleared while the user is
+    /// actively typing on the input row.
+    status_line: String,
+    /// Last line / statement RUN finished on, for the report.
+    last_run_line: u16,
+    /// Spectrum's lower screen is one line tall on boot (copyright only,
+    /// no cursor) and grows to two lines as soon as the user starts
+    /// typing. This flag flips on the first keystroke.
+    started_typing: bool,
+    /// Queue of `BEEP duration, pitch` requests, drained by the host's
+    /// audio code. Each entry is `(duration_seconds, frequency_hz)`.
+    pending_beeps: Vec<(f32, f32)>,
 }
 
 #[derive(Clone)]
@@ -105,6 +119,10 @@ impl System {
             pen_x: 0,
             pen_y: 0,
             current_border: 7,
+            status_line: "\u{00A9} 1982 Sinclair Research Ltd".to_string(),
+            last_run_line: 0,
+            started_typing: false,
+            pending_beeps: Vec::new(),
         };
         sys.redraw_input();
         sys
@@ -132,18 +150,25 @@ impl System {
     pub fn feed_key(&mut self, key: Key) {
         match key {
             Key::Char(b) if (32..=126).contains(&b) => {
-                // Generous limit; the input row only shows the last CHAR_W
-                // characters, but the buffer itself can be longer (a full
-                // Spectrum-style multi-line editor lands in MVP-6).
+                self.started_typing = true;
+                self.status_line.clear();
                 if self.input_line.len() < 255 {
                     self.input_line.push(b as char);
                 }
             }
             Key::Char(_) => {}
             Key::Backspace => {
+                self.started_typing = true;
+                self.status_line.clear();
                 self.input_line.pop();
             }
             Key::Enter => {
+                // Pressing Enter — even on an empty line — acknowledges any
+                // standing status report and returns to a clean K-cursor
+                // edit prompt. If the line had content, dispatch_input /
+                // resolve_pending_input below will set a fresh status.
+                self.started_typing = true;
+                self.status_line.clear();
                 let line = std::mem::take(&mut self.input_line);
                 if let Some(pending) = self.pending_input.take() {
                     self.resolve_pending_input(pending, &line);
@@ -156,10 +181,15 @@ impl System {
     }
 
     fn redraw_input(&mut self) {
+        // While there's a status message pending (boot copyright or last
+        // report) the lower screen shows *only* that — no cursor, no input
+        // — matching the Spectrum's one-line-or-the-other behaviour.
+        if !self.status_line.is_empty() {
+            self.display.print_input(&self.status_line, None);
+            return;
+        }
         let prompt = if self.pending_input.is_some() { "?" } else { "" };
         let combined = format!("{}{}", prompt, self.input_line);
-        // Only the trailing CHAR_W characters fit on the input row; show the
-        // tail so the cursor stays visible while typing past column 32.
         let chars: Vec<char> = combined.chars().collect();
         let visible: String = if chars.len() >= CHAR_W {
             chars[chars.len() - (CHAR_W - 1)..].iter().collect()
@@ -167,7 +197,20 @@ impl System {
             chars.iter().collect()
         };
         let cursor_col = visible.chars().count().min(CHAR_W - 1);
-        self.display.print_input(&visible, cursor_col);
+        self.display.print_input(&visible, Some(cursor_col));
+    }
+
+    fn set_report(&mut self, code: i32, message: &str, line: u16, stmt: u16) {
+        // Spectrum's report format: a single-character code (0-9 → '0'-'9',
+        // 10-21 → 'A'-'L'), then space, message, comma+space, line:stmt.
+        let code_ch = if (0..10).contains(&code) {
+            char::from(b'0' + code as u8)
+        } else if (10..=21).contains(&code) {
+            char::from(b'A' + (code as u8 - 10))
+        } else {
+            '?'
+        };
+        self.status_line = format!("{} {}, {}:{}", code_ch, message, line, stmt);
     }
 
     fn resolve_pending_input(&mut self, pending: PendingInput, raw: &str) {
@@ -201,17 +244,21 @@ impl System {
         }
         if trimmed.chars().next().map_or(false, |c| c.is_ascii_digit()) {
             self.store_program_line(trimmed);
+            // Entering a program line leaves the status blank, like Spectrum.
+            self.status_line.clear();
         } else {
             match self.execute_statement(trimmed) {
-                StepResult::Ok | StepResult::Stop => {}
-                StepResult::Goto(_) | StepResult::AwaitInput => {
-                    // GOTO and INPUT outside of RUN are meaningless in our
-                    // model. (Real Spectrum permits immediate INPUT in K
-                    // mode; we'll add that with the full editor in MVP-6.)
-                    self.pending_input = None;
-                    self.println_error("Nonsense in BASIC");
+                StepResult::Ok | StepResult::Stop => {
+                    // Immediate command completed successfully → "0 OK, 0:0".
+                    self.set_report(0, "OK", 0, 0);
                 }
-                StepResult::Error(msg) => self.println_error(&msg),
+                StepResult::Goto(_) | StepResult::AwaitInput => {
+                    self.pending_input = None;
+                    self.set_report(1, "Nonsense in BASIC", 0, 0);
+                }
+                StepResult::Error(msg) => {
+                    self.set_report(1, &msg, 0, 0);
+                }
             }
         }
     }
@@ -229,8 +276,38 @@ impl System {
         self.program.upsert(n, body);
     }
 
-    fn execute_statement(&mut self, stmt: &str) -> StepResult {
+    /// Execute zero or more `:`-separated statements on a single source
+    /// line. Stops early on Stop / Goto / Error / AwaitInput so those
+    /// outcomes propagate to RUN.
+    fn execute_statement(&mut self, line: &str) -> StepResult {
+        let mut rest = line.trim();
+        loop {
+            if rest.is_empty() {
+                return StepResult::Ok;
+            }
+            // IF and DEF FN both consume everything up to end-of-line,
+            // including any `:` that would otherwise look like a separator
+            // (the colons belong to the THEN body / the function body).
+            let head_upper = first_word_uppercase(rest);
+            let (this, next) = if head_upper == "IF" || head_upper == "DEF" {
+                (rest, "")
+            } else {
+                split_top_level_colon(rest)
+            };
+            match self.execute_one(this) {
+                StepResult::Ok => {}
+                other => return other,
+            }
+            rest = next.trim_start();
+        }
+    }
+
+    /// Dispatch a single statement (no further `:` splitting).
+    fn execute_one(&mut self, stmt: &str) -> StepResult {
         let stmt = stmt.trim();
+        if stmt.is_empty() {
+            return StepResult::Ok;
+        }
         let (head, rest) = split_first_word(stmt);
         let head_upper = head.to_ascii_uppercase();
         match head_upper.as_str() {
@@ -271,6 +348,7 @@ impl System {
             "DRAW" => self.cmd_draw(rest),
             "CIRCLE" => self.cmd_circle(rest),
             "BORDER" => self.cmd_border(rest),
+            "BEEP" => self.cmd_beep(rest),
             _ => StepResult::Error("Nonsense in BASIC".to_string()),
         }
     }
@@ -404,6 +482,36 @@ impl System {
             }
         }
         StepResult::Ok
+    }
+
+    fn cmd_beep(&mut self, args: &str) -> StepResult {
+        // BEEP <duration>, <pitch>
+        // pitch is semitones from middle C (C4 = 0). Frequency:
+        //   f = 440 * 2 ^ ((pitch - 9) / 12)
+        // because A4 = 440 Hz sits 9 semitones above C4.
+        let parts: Vec<&str> = args.splitn(2, ',').collect();
+        if parts.len() != 2 {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        }
+        let env = self.env_view();
+        let dur = expression::evaluate_with(parts[0], &env).and_then(|v| v.as_num());
+        let pitch = expression::evaluate_with(parts[1], &env).and_then(|v| v.as_num());
+        let (dur, pitch) = match (dur, pitch) {
+            (Ok(d), Ok(p)) => (d, p),
+            _ => return StepResult::Error("Nonsense in BASIC".to_string()),
+        };
+        if !(0.0..=120.0).contains(&dur) {
+            return StepResult::Error("Integer out of range".to_string());
+        }
+        let freq = 440.0 * 2f64.powf((pitch - 9.0) / 12.0);
+        self.pending_beeps.push((dur as f32, freq as f32));
+        StepResult::Ok
+    }
+
+    /// Drain queued BEEP requests for the host to play. Each pair is
+    /// `(duration_seconds, frequency_hz)`.
+    pub fn drain_beeps(&mut self) -> Vec<(f32, f32)> {
+        std::mem::take(&mut self.pending_beeps)
     }
 
     fn cmd_border(&mut self, args: &str) -> StepResult {
@@ -641,8 +749,10 @@ impl System {
     fn run_loop(&mut self, mut pc: Option<u16>) {
         let mut steps = 0usize;
         while let Some(line_no) = pc {
+            self.last_run_line = line_no;
             if steps >= RUN_STEP_LIMIT {
-                self.println_error("D BREAK - CONT repeats");
+                // Step-limit fallback: Spectrum would call this "D BREAK".
+                self.set_report(13, "BREAK - CONT repeats", line_no, 1);
                 self.current_line = None;
                 return;
             }
@@ -658,6 +768,8 @@ impl System {
                     pc = self.program.next_at_or_after(line_no.saturating_add(1));
                 }
                 StepResult::Stop => {
+                    // STOP statement → "9 STOP statement, line:1".
+                    self.set_report(9, "STOP statement", line_no, 1);
                     self.current_line = None;
                     return;
                 }
@@ -665,17 +777,18 @@ impl System {
                     pc = self.program.next_at_or_after(n);
                 }
                 StepResult::AwaitInput => {
-                    // cmd_input set self.pending_input already.
                     self.current_line = None;
                     return;
                 }
                 StepResult::Error(msg) => {
-                    self.println_error(&format!("{}, {}:1", msg, line_no));
+                    self.set_report(1, &msg, line_no, 1);
                     self.current_line = None;
                     return;
                 }
             }
         }
+        // Fell off the end of the program cleanly → "0 OK, line:1".
+        self.set_report(0, "OK", self.last_run_line, 1);
         self.current_line = None;
     }
 
@@ -1107,6 +1220,40 @@ fn split_leading_number(s: &str) -> (&str, &str) {
     (&s[..end], &s[end..])
 }
 
+/// Return `(prefix, rest)` split on the first top-level `:` in `s`. Top
+/// level means: outside `"..."` and outside `(...)`. If there's no such
+/// colon, returns `(s, "")`.
+fn split_top_level_colon(s: &str) -> (&str, &str) {
+    let bytes = s.as_bytes();
+    let mut depth: i32 = 0;
+    let mut in_str = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'"' {
+            in_str = !in_str;
+        } else if !in_str {
+            if b == b'(' {
+                depth += 1;
+            } else if b == b')' {
+                depth -= 1;
+            } else if b == b':' && depth == 0 {
+                return (&s[..i], &s[i + 1..]);
+            }
+        }
+    }
+    (s, "")
+}
+
+/// First whitespace-delimited word of `s`, uppercased. Used for keyword
+/// detection without slicing arguments.
+fn first_word_uppercase(s: &str) -> String {
+    let s = s.trim_start();
+    let end = s
+        .char_indices()
+        .find(|(_, c)| c.is_ascii_whitespace())
+        .map_or(s.len(), |(i, _)| i);
+    s[..end].to_ascii_uppercase()
+}
+
 fn split_first_word(s: &str) -> (&str, &str) {
     let s = s.trim_start();
     let end = s
@@ -1147,11 +1294,11 @@ fn is_valid_var_name(name: &str) -> bool {
     bytes[..body_end].iter().all(|b| b.is_ascii_alphanumeric())
 }
 
-fn paint_boot_screen(d: &mut Display) {
-    // Match the 1982 ROM boot screen: a single line near the bottom of the
-    // upper screen. Position chosen empirically to match real Spectrum
-    // photographs (row 21, column 1).
-    d.print_str(1, 21, "\u{00A9} 1982 Sinclair Research Ltd");
+fn paint_boot_screen(_d: &mut Display) {
+    // The Spectrum boot copyright lives in the *lower screen*, not the
+    // upper one. We paint it from `redraw_input` so it disappears
+    // automatically the moment the user presses a key (the lower screen
+    // gets repurposed as the edit area). Nothing to paint here.
 }
 
 #[cfg(test)]
@@ -1330,6 +1477,27 @@ mod tests {
         feed_str(&mut sys, "LET A=\"hi\"");
         enter(&mut sys);
         assert!(sys.vars.get("A").is_none());
+    }
+
+    #[test]
+    fn multi_statement_colon() {
+        let mut sys = System::new();
+        // Three colon-separated statements on one immediate line.
+        feed_str(&mut sys, "LET A=10: LET B=20: LET C=A+B");
+        enter(&mut sys);
+        assert_eq!(num(&sys, "A"), Some(10.0));
+        assert_eq!(num(&sys, "B"), Some(20.0));
+        assert_eq!(num(&sys, "C"), Some(30.0));
+    }
+
+    #[test]
+    fn multi_statement_inside_program_line() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "10 LET A=1: LET B=2: LET C=A+B");
+        enter(&mut sys);
+        feed_str(&mut sys, "RUN");
+        enter(&mut sys);
+        assert_eq!(num(&sys, "C"), Some(3.0));
     }
 
     #[test]

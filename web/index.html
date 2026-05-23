@@ -61,6 +61,53 @@
     window.addEventListener("resize", resize);
     resize();
 
+    // Single AudioContext shared by both key clicks and BEEP playback,
+    // declared up-front so neither helper trips a temporal-dead-zone
+    // reference. Lazily created on the first user-gesture call.
+    let audioCtx = null;
+    function audioReady() {
+      if (!audioCtx) {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) {
+          console.warn("[zxbasic] no AudioContext support");
+          return null;
+        }
+        audioCtx = new Ctx();
+        console.log("[zxbasic] AudioContext created, state:", audioCtx.state);
+      }
+      if (audioCtx.state === "suspended") {
+        audioCtx.resume().then(
+          () => console.log("[zxbasic] AudioContext resumed:", audioCtx.state),
+          (err) => console.warn("[zxbasic] resume failed", err),
+        );
+      }
+      return audioCtx;
+    }
+
+    // BEEP scheduling. Tones queued back-to-back via `nextBeepTime` so a
+    // fast RUN-driven sequence still plays as a melody.
+    let nextBeepTime = 0;
+    function scheduleBeep(duration, frequency) {
+      const ctx = audioReady();
+      if (!ctx) return;
+      try {
+        const now = ctx.currentTime;
+        const start = Math.max(now, nextBeepTime);
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "square";
+        osc.frequency.value = frequency;
+        gain.gain.setValueAtTime(0, start);
+        gain.gain.linearRampToValueAtTime(0.08, start + 0.005);
+        gain.gain.setValueAtTime(0.08, start + duration - 0.005);
+        gain.gain.linearRampToValueAtTime(0, start + duration);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(start);
+        osc.stop(start + duration);
+        nextBeepTime = start + duration;
+      } catch (err) { console.warn("[zxbasic] beep failed", err); }
+    }
+
     function frame() {
       const buf = sys.render();
       const img = new ImageData(new Uint8ClampedArray(buf), 256, 192);
@@ -71,21 +118,81 @@
       if (document.body.style.backgroundColor !== css) {
         document.body.style.backgroundColor = css;
       }
+      // Drain any BEEPs queued by RUN since the last frame and schedule
+      // them as a contiguous melody.
+      const beeps = sys.take_beeps();
+      for (let i = 0; i + 1 < beeps.length; i += 2) {
+        scheduleBeep(beeps[i], beeps[i + 1]);
+      }
       requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
 
+    // Key click: a short percussive thump (white-noise burst, lowpassed,
+    // linear decay). Sounds like a key being struck, not a tone played.
+    function keyClick() {
+      const ctx = audioReady();
+      if (!ctx) return;
+      try {
+        const dur = 0.003;
+        const sr = ctx.sampleRate;
+        const length = Math.max(1, Math.floor(sr * dur));
+        const buf = ctx.createBuffer(1, length, sr);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < length; i++) {
+          data[i] = (Math.random() * 2 - 1) * (1 - i / length);
+        }
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        const filter = ctx.createBiquadFilter();
+        filter.type = "lowpass";
+        filter.frequency.value = 1200;
+        filter.Q.value = 0.7;
+        const gain = ctx.createGain();
+        gain.gain.value = 0.35;
+        src.connect(filter).connect(gain).connect(ctx.destination);
+        src.start(ctx.currentTime);
+      } catch (err) { console.warn("[zxbasic] click failed", err); }
+    }
+
+    // Cmd/Ctrl+V paste: drop the clipboard text into the input buffer as if
+    // the user typed each character. Multi-line paste commits every line but
+    // the last by pressing Enter between them, so the final line stays
+    // editable (e.g. so you can append RUN). Non-printable characters and
+    // surplus whitespace are filtered out.
+    document.addEventListener("paste", (e) => {
+      const text = (e.clipboardData || window.clipboardData)?.getData("text");
+      if (!text) return;
+      e.preventDefault();
+      const lines = text.replace(/\r\n/g, "\n").split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        for (const ch of lines[i]) {
+          const code = ch.charCodeAt(0);
+          if (code >= 32 && code <= 126) {
+            sys.feed_char(code);
+          }
+        }
+        if (i < lines.length - 1) sys.feed_enter();
+      }
+    });
+
     // Keyboard goes to the document so users don't have to click the canvas.
     document.addEventListener("keydown", (e) => {
+      // Don't swallow modifier combos like Cmd/Ctrl+V — let the paste event
+      // through.
+      if (e.metaKey || e.ctrlKey) return;
       if (e.key === "Enter") {
+        keyClick();
         sys.feed_enter();
         e.preventDefault();
       } else if (e.key === "Backspace") {
+        keyClick();
         sys.feed_backspace();
         e.preventDefault();
       } else if (e.key.length === 1) {
         const code = e.key.charCodeAt(0);
         if (code >= 32 && code <= 126) {
+          keyClick();
           sys.feed_char(code);
           e.preventDefault();
         }

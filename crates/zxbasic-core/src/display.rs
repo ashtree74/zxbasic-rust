@@ -25,8 +25,12 @@ pub const CHAR_H: usize = PIXEL_H / CELL_H; // 24
 pub const ATTR_W: usize = CHAR_W;
 pub const ATTR_H: usize = CHAR_H;
 
-pub const INPUT_ROW: usize = 23;
-pub const PRINT_BOTTOM: usize = 22;
+/// The Spectrum's lower screen sits on row 22 — the same physical line
+/// holds either a status report (boot copyright, `0 OK, X:Y` etc.) or the
+/// active editor line with a K-mode cursor; never both at the same time.
+pub const INPUT_ROW: usize = 22;
+/// Last row of the scrolling upper screen (PRINT output).
+pub const PRINT_BOTTOM: usize = 21;
 
 pub const FRAME_RGBA_LEN: usize = PIXEL_W * PIXEL_H * 4;
 
@@ -201,9 +205,11 @@ impl Display {
         }
     }
 
-    /// Redraw the single input row with `text` followed by a cursor block.
-    /// Always uses the default attribute (input area is fixed colour).
-    pub fn print_input(&mut self, text: &str, cursor_col: usize) {
+    /// Redraw the single lower-screen row. The caller chooses whether the
+    /// line shows a status message (boot copyright, `0 OK, …` report) or
+    /// the active editor input with a K-mode cursor — both options share
+    /// the same physical row, never coexisting.
+    pub fn print_input(&mut self, text: &str, cursor_col: Option<usize>) {
         self.clear_row(INPUT_ROW, DEFAULT_ATTR);
         for (i, ch) in text.chars().enumerate() {
             if i >= CHAR_W {
@@ -211,8 +217,11 @@ impl Display {
             }
             self.print_at(i, INPUT_ROW, ch, DEFAULT_ATTR);
         }
-        if cursor_col < CHAR_W {
-            self.print_at(cursor_col, INPUT_ROW, '_', DEFAULT_ATTR);
+        if let Some(col) = cursor_col {
+            if col < CHAR_W {
+                let cursor_attr = make_attr(7, 0, false, true);
+                self.print_at(col, INPUT_ROW, 'K', cursor_attr);
+            }
         }
     }
 

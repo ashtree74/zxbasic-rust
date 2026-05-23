@@ -61,6 +61,19 @@ impl System {
         let [r, g, b] = self.inner.border_rgb();
         ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
     }
+
+    /// Drain queued `BEEP duration, pitch` requests. Returns a flat array of
+    /// `[duration_sec_0, freq_hz_0, duration_sec_1, freq_hz_1, …]`. JS
+    /// schedules them sequentially through the WebAudio context.
+    pub fn take_beeps(&mut self) -> Box<[f32]> {
+        let beeps = self.inner.drain_beeps();
+        let mut out = Vec::with_capacity(beeps.len() * 2);
+        for (d, f) in beeps {
+            out.push(d);
+            out.push(f);
+        }
+        out.into_boxed_slice()
+    }
 }
 
 impl Default for System {

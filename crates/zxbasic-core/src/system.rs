@@ -26,6 +26,11 @@ pub enum Key {
     /// the same way the ROM does (`08_command.asm:378` calls break_key
     /// after every statement).
     Break,
+    /// Modern-terminal niceties — not original to the Spectrum keyboard,
+    /// but the cost of an old-school history recall on the immediate line
+    /// is essentially free and saves a lot of retyping.
+    HistoryPrev,
+    HistoryNext,
 }
 
 /// How many BASIC statements to execute per host frame. Picked so a tight
@@ -107,7 +112,22 @@ pub struct System {
     /// One-shot flag: when set, the host should cancel any sounds that are
     /// currently playing. Drained by `take_audio_cancel`.
     audio_cancel_requested: bool,
+    /// Ring of previously-committed input lines, oldest first. Up/Down on
+    /// the editor walk through this — modern-terminal recall, not in the
+    /// original Spectrum.
+    history: Vec<String>,
+    /// Index into `history` when the user is currently browsing it.
+    /// `None` means the editor is showing fresh typing (the "draft").
+    history_pos: Option<usize>,
+    /// What the user had typed before they started pressing Up. We stash
+    /// it so pressing Down past the newest entry can restore the
+    /// in-progress draft.
+    history_draft: String,
 }
+
+/// Cap on the recall ring. Big enough to cover a session of poking
+/// around, small enough to keep the editor state cheap.
+const HISTORY_MAX: usize = 64;
 
 #[derive(Clone)]
 struct UserFn {
@@ -169,6 +189,9 @@ impl System {
             audio_cancel_requested: false,
             data_buffer: Vec::new(),
             data_pointer: 0,
+            history: Vec::new(),
+            history_pos: None,
+            history_draft: String::new(),
         };
         sys.redraw_input();
         sys
@@ -225,6 +248,7 @@ impl System {
             Key::Char(b) if (32..=126).contains(&b) => {
                 self.started_typing = true;
                 self.status_line.clear();
+                self.history_pos = None;
                 if self.input_line.len() < 255 {
                     self.input_line.push(b as char);
                 }
@@ -233,6 +257,7 @@ impl System {
             Key::Backspace => {
                 self.started_typing = true;
                 self.status_line.clear();
+                self.history_pos = None;
                 self.input_line.pop();
             }
             Key::Enter => {
@@ -243,6 +268,9 @@ impl System {
                 self.started_typing = true;
                 self.status_line.clear();
                 let line = std::mem::take(&mut self.input_line);
+                self.push_history(&line);
+                self.history_pos = None;
+                self.history_draft.clear();
                 if let Some(pending) = self.pending_input.take() {
                     self.resolve_pending_input(pending, &line);
                 } else {
@@ -254,8 +282,73 @@ impl System {
                 // the next tick. Has no immediate effect outside RUN.
                 self.break_requested = true;
             }
+            Key::HistoryPrev => self.recall_history(-1),
+            Key::HistoryNext => self.recall_history(1),
         }
         self.redraw_input();
+    }
+
+    fn push_history(&mut self, line: &str) {
+        // Drop empties and immediate-duplicate-of-last (terminal convention).
+        // The line is only worth keeping while we're in immediate mode —
+        // INPUT prompts collect data, not commands, and shouldn't show up
+        // when the user later hits Up at the K cursor.
+        if self.pending_input.is_some() {
+            return;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if self.history.last().map(|s| s.as_str()) == Some(line) {
+            return;
+        }
+        self.history.push(line.to_string());
+        if self.history.len() > HISTORY_MAX {
+            self.history.remove(0);
+        }
+    }
+
+    fn recall_history(&mut self, direction: i32) {
+        // Up/Down is only meaningful at the K cursor. During RUN, while a
+        // BEEP/PAUSE blocks, or while we're waiting on INPUT, the lower
+        // screen doesn't show the input buffer — so swallow the keypress.
+        if self.pc.is_some()
+            || self.beep_frames_remaining > 0
+            || self.pause_frames_remaining > 0
+            || self.pending_input.is_some()
+        {
+            return;
+        }
+        if self.history.is_empty() {
+            return;
+        }
+        let new_pos: Option<usize> = match (self.history_pos, direction) {
+            // Up from the live draft: stash it and jump to the newest entry.
+            (None, d) if d < 0 => {
+                self.history_draft = std::mem::take(&mut self.input_line);
+                Some(self.history.len() - 1)
+            }
+            // Down from the live draft: nothing more recent to show.
+            (None, _) => return,
+            // Up from somewhere in history: step back if we can.
+            (Some(i), d) if d < 0 => Some(i.saturating_sub(1)),
+            // Down from the oldest end: stay put (`Some(0)` would re-show
+            // history[0] again, but `saturating` already does that).
+            (Some(i), _) if i + 1 < self.history.len() => Some(i + 1),
+            // Down past the most recent entry: leave history, restore draft.
+            (Some(_), _) => None,
+        };
+        // Build the input_line first so the borrow on self.history is gone
+        // before we touch self.input_line.
+        let new_line = match new_pos {
+            Some(i) => self.history[i].clone(),
+            None => std::mem::take(&mut self.history_draft),
+        };
+        self.input_line = new_line;
+        self.history_pos = new_pos;
+        self.started_typing = true;
+        self.status_line.clear();
     }
 
     fn redraw_input(&mut self) {
@@ -2073,6 +2166,50 @@ mod tests {
         // overkill; instead trust that the unit test covers the bit
         // logic and just confirm RUN completed without error.
         assert!(!sys.is_running());
+    }
+
+    #[test]
+    fn history_up_down_walks_previous_lines() {
+        // Type two immediate-mode lines, then Up/Down should walk us back
+        // and forward through them, restoring an in-progress draft on the
+        // last Down.
+        let mut sys = System::new();
+        feed_str(&mut sys, "LET A=1");
+        enter(&mut sys);
+        feed_str(&mut sys, "LET B=2");
+        enter(&mut sys);
+        // Start typing a third line, then recall older entries.
+        feed_str(&mut sys, "PRIN");
+        sys.feed_key(Key::HistoryPrev);
+        assert_eq!(sys.input_line, "LET B=2");
+        sys.feed_key(Key::HistoryPrev);
+        assert_eq!(sys.input_line, "LET A=1");
+        // Walking past the oldest entry should stay put.
+        sys.feed_key(Key::HistoryPrev);
+        assert_eq!(sys.input_line, "LET A=1");
+        // Down brings us back toward the newest, then to the saved draft.
+        sys.feed_key(Key::HistoryNext);
+        assert_eq!(sys.input_line, "LET B=2");
+        sys.feed_key(Key::HistoryNext);
+        assert_eq!(sys.input_line, "PRIN");
+        // Further Down with nothing left to forward to is a no-op.
+        sys.feed_key(Key::HistoryNext);
+        assert_eq!(sys.input_line, "PRIN");
+    }
+
+    #[test]
+    fn history_drops_duplicates_and_empties() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "LET A=1");
+        enter(&mut sys);
+        feed_str(&mut sys, "LET A=1"); // exact duplicate
+        enter(&mut sys);
+        enter(&mut sys); // empty line — must not enter history
+        sys.feed_key(Key::HistoryPrev);
+        assert_eq!(sys.input_line, "LET A=1");
+        sys.feed_key(Key::HistoryPrev);
+        // Only one entry in history: stay on it.
+        assert_eq!(sys.input_line, "LET A=1");
     }
 
     #[test]

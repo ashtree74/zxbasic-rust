@@ -505,6 +505,14 @@
         keyClick();
         sys.feed_backspace();
         e.preventDefault();
+      } else if (e.key === "ArrowUp") {
+        // Modern-terminal command history — not in the original Spectrum
+        // keyboard, but a strict QoL upgrade on the immediate-mode prompt.
+        sys.feed_history_prev();
+        e.preventDefault();
+      } else if (e.key === "ArrowDown") {
+        sys.feed_history_next();
+        e.preventDefault();
       } else if (e.key.length === 1) {
         const code = e.key.charCodeAt(0);
         if (code >= 32 && code <= 126) {

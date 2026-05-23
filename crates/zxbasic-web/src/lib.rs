@@ -61,6 +61,17 @@ impl System {
         self.inner.feed_key(Key::Break);
     }
 
+    /// Modern-terminal command recall — Up walks back through previously
+    /// entered immediate-mode lines, Down walks forward toward the live
+    /// draft. No-op while a program is running.
+    pub fn feed_history_prev(&mut self) {
+        self.inner.feed_key(Key::HistoryPrev);
+    }
+
+    pub fn feed_history_next(&mut self) {
+        self.inner.feed_key(Key::HistoryNext);
+    }
+
     /// Current screen-border colour as a packed RGB integer (0xRRGGBB).
     /// JS reads this every frame to keep the border around the canvas in sync.
     pub fn border_rgb_packed(&self) -> u32 {

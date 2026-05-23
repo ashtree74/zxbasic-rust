@@ -79,6 +79,14 @@ impl System {
         ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
     }
 
+    /// Drain the per-frame `BORDER N` write log. Returns a byte array of
+    /// Spectrum colour indices (0..=7) in the order they were written.
+    /// JS turns ≥2 entries into a multi-stripe gradient — a cheap
+    /// approximation of the raster-timing border tricks demos used.
+    pub fn take_border_stripes(&mut self) -> Box<[u8]> {
+        self.inner.drain_border_writes().into_boxed_slice()
+    }
+
     /// Drain queued `BEEP duration, pitch` requests. Returns a flat array of
     /// `[duration_sec_0, freq_hz_0, duration_sec_1, freq_hz_1, …]`. JS
     /// schedules them sequentially through the WebAudio context.

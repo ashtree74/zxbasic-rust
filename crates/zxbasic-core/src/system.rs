@@ -112,6 +112,12 @@ pub struct System {
     /// One-shot flag: when set, the host should cancel any sounds that are
     /// currently playing. Drained by `take_audio_cancel`.
     audio_cancel_requested: bool,
+    /// Every `BORDER N` issued since the last host frame, in order. The
+    /// host drains this and paints them as horizontal stripes in the
+    /// border area — a cheap stand-in for the ULA raster-timing tricks
+    /// that demos used to produce loading-screen stripes. Empty between
+    /// frames means "border stays solid" (use [`current_border`]).
+    border_writes_this_frame: Vec<u8>,
     /// Ring of previously-committed input lines, oldest first. Up/Down on
     /// the editor walk through this — modern-terminal recall, not in the
     /// original Spectrum.
@@ -189,6 +195,7 @@ impl System {
             audio_cancel_requested: false,
             data_buffer: Vec::new(),
             data_pointer: 0,
+            border_writes_this_frame: Vec::new(),
             history: Vec::new(),
             history_pos: None,
             history_draft: String::new(),
@@ -983,6 +990,9 @@ impl System {
         }
         let n = n as u8;
         self.current_border = n;
+        // Record the write so the host can render multiple BORDER changes
+        // within a single frame as horizontal stripes (cheap ULA stand-in).
+        self.border_writes_this_frame.push(n);
         // Build bordcr the same way 08_command.asm:1833 does: paper = N,
         // ink = 7 (white) for dark borders 0..3, ink = 0 (black) for light
         // borders 4..7. The lower screen and the post-RUN report repaint
@@ -991,6 +1001,16 @@ impl System {
         let bordcr = if n >= 4 { paper_bits } else { paper_bits | 0x07 };
         self.display.set_lower_attr(bordcr);
         StepResult::Ok
+    }
+
+    /// Drain every `BORDER N` issued since the last call, in order. The
+    /// host paints them as equal-height horizontal stripes in the border
+    /// area; an empty result means the border stayed put and the host
+    /// can keep its current solid colour. Single-write frames are a
+    /// no-op visual change vs. the previous behaviour — the "stripe" is
+    /// just one band the full height of the border.
+    pub fn drain_border_writes(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.border_writes_this_frame)
     }
 
     /// RGB triple of the current screen border, for the host UI to render

@@ -318,15 +318,39 @@
       if (audioCtx) nextBeepTime = audioCtx.currentTime;
     }
 
+    // Spectrum BORDER palette, indices 0..7. Matches
+    // crate::display::spectrum_palette(_, bright=false) — keep these in
+    // sync if the Rust palette changes.
+    const BORDER_PALETTE = [
+      "#000000", "#0000cd", "#cd0000", "#cd00cd",
+      "#00cd00", "#00cdcd", "#cdcd00", "#cdcdcd",
+    ];
+
     function frame() {
       const buf = sys.render();
       const img = new ImageData(new Uint8ClampedArray(buf), 256, 192);
       ctx.putImageData(img, 0, 0);
-      // Sync the body background to the current Spectrum BORDER colour.
-      const rgb = sys.border_rgb_packed();
-      const css = "#" + rgb.toString(16).padStart(6, "0");
-      if (document.body.style.backgroundColor !== css) {
-        document.body.style.backgroundColor = css;
+      // Sync the body background to the BORDER state. If only one (or
+      // zero) BORDER write happened this frame, paint a solid colour;
+      // otherwise stack the writes as equal-height horizontal stripes
+      // — a cheap stand-in for the ULA raster-timing border tricks
+      // that demos used for loading-screen stripes.
+      const stripes = sys.take_border_stripes();
+      let bg;
+      if (stripes.length >= 2) {
+        const segH = (100 / stripes.length);
+        const stops = [];
+        for (let i = 0; i < stripes.length; i++) {
+          const c = BORDER_PALETTE[stripes[i] & 7];
+          stops.push(`${c} ${(i * segH).toFixed(3)}% ${((i + 1) * segH).toFixed(3)}%`);
+        }
+        bg = `linear-gradient(to bottom, ${stops.join(", ")})`;
+      } else {
+        const rgb = sys.border_rgb_packed();
+        bg = "#" + rgb.toString(16).padStart(6, "0");
+      }
+      if (document.body.style.background !== bg) {
+        document.body.style.background = bg;
       }
       // If RUN was interrupted by BREAK during a BEEP, cut any tones that
       // would otherwise keep playing after the program has stopped.

@@ -268,6 +268,26 @@ impl Display {
         self.attrs[cell] = cell_attr;
     }
 
+    /// `PLOT OVER 1; x, y` — toggle the pixel at (x, y). Same coordinate
+    /// system as [`plot`]. The attribute cell is updated only if the
+    /// pixel was *set* by this call (Spectrum convention: OVER 1 doesn't
+    /// repaint cells it ended up clearing).
+    pub fn plot_xor(&mut self, x: i32, y: i32, cell_attr: u8) {
+        if x < 0 || y < 0 || x >= PIXEL_W as i32 || y >= PIXEL_H as i32 {
+            return;
+        }
+        let x = x as usize;
+        let py = (PIXEL_H - 1) - y as usize;
+        let byte_idx = py * STRIDE_BYTES + x / 8;
+        let bit = 7 - (x % 8) as u8;
+        self.bits[byte_idx] ^= 1 << bit;
+        let now_set = (self.bits[byte_idx] >> bit) & 1 == 1;
+        if now_set {
+            let cell = (py / CELL_H) * ATTR_W + x / CELL_W;
+            self.attrs[cell] = cell_attr;
+        }
+    }
+
     /// Bresenham line from `(x0, y0)` to `(x1, y1)` (Spectrum convention,
     /// y-up).
     pub fn draw_line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, attr: u8) {

@@ -3,7 +3,10 @@
 //! Grammar (precedence low to high):
 //!
 //! ```text
-//! expr     = relation
+//! expr     = or_expr
+//! or_expr  = and_expr ('OR'  and_expr)*       // Spectrum priority 2
+//! and_expr = not_expr ('AND' not_expr)*       // priority 3
+//! not_expr = 'NOT' not_expr | relation        // priority 4 (unary)
 //! relation = additive (('=' | '<>' | '<' | '>' | '<=' | '>=') additive)?
 //! additive = term     (('+' | '-') term)*
 //! term     = power    (('*' | '/') power)*
@@ -16,6 +19,11 @@
 //! string_literal = '"' (any-byte-except-")* '"'
 //! identifier = [A-Za-z] [A-Za-z0-9]* '$'?
 //! ```
+//!
+//! Logical-operator semantics (numeric, mirroring the manual):
+//!   * `NOT x`  → 1 if x = 0, else 0.
+//!   * `a AND b` → a if b ≠ 0, else 0.
+//!   * `a OR b`  → 1 if b ≠ 0, else a.
 //!
 //! Type rules:
 //!   * `+` works on `num + num` (add) or `str + str` (concat). Mixed → error.
@@ -198,7 +206,48 @@ impl<'a, 'e> Parser<'a, 'e> {
     }
 
     fn expr(&mut self) -> Result<Value, EvalError> {
-        self.relation()
+        self.or_expr()
+    }
+
+    fn or_expr(&mut self) -> Result<Value, EvalError> {
+        let mut lhs = self.and_expr()?;
+        loop {
+            self.skip_ws();
+            if !self.peek_keyword("OR") {
+                break;
+            }
+            self.consume_keyword("OR");
+            let l = lhs.as_num()?;
+            let r = self.and_expr()?.as_num()?;
+            lhs = Value::Num(if r != 0.0 { 1.0 } else { l });
+        }
+        Ok(lhs)
+    }
+
+    fn and_expr(&mut self) -> Result<Value, EvalError> {
+        let mut lhs = self.not_expr()?;
+        loop {
+            self.skip_ws();
+            if !self.peek_keyword("AND") {
+                break;
+            }
+            self.consume_keyword("AND");
+            let l = lhs.as_num()?;
+            let r = self.not_expr()?.as_num()?;
+            lhs = Value::Num(if r != 0.0 { l } else { 0.0 });
+        }
+        Ok(lhs)
+    }
+
+    fn not_expr(&mut self) -> Result<Value, EvalError> {
+        self.skip_ws();
+        if self.peek_keyword("NOT") {
+            self.consume_keyword("NOT");
+            let v = self.not_expr()?.as_num()?;
+            Ok(Value::Num(if v == 0.0 { 1.0 } else { 0.0 }))
+        } else {
+            self.relation()
+        }
     }
 
     fn relation(&mut self) -> Result<Value, EvalError> {
@@ -664,6 +713,30 @@ mod tests {
         ok_num("-3", -3.0);
         ok_num("1=1", 1.0);
         ok_num("3<>3", 0.0);
+    }
+
+    #[test]
+    fn logical_operators() {
+        // NOT
+        ok_num("NOT 0", 1.0);
+        ok_num("NOT 1", 0.0);
+        ok_num("NOT NOT 5", 1.0);
+        ok_num("NOT NOT 0", 0.0);
+        // AND returns lhs if rhs ≠ 0, else 0
+        ok_num("5 AND 1", 5.0);
+        ok_num("5 AND 0", 0.0);
+        ok_num("0 AND 5", 0.0);
+        // OR returns 1 if rhs ≠ 0, else lhs
+        ok_num("5 OR 1", 1.0);
+        ok_num("5 OR 0", 5.0);
+        ok_num("0 OR 0", 0.0);
+        // Precedence: comparison tighter than NOT/AND/OR
+        ok_num("1>=0 AND 1<=255", 1.0);
+        ok_num("3>=0 AND 3<=2", 0.0);
+        // AND tighter than OR: (1 AND 0) OR 1 = 0 OR 1 = 1
+        ok_num("1 AND 0 OR 1", 1.0);
+        // Range check idiom from typical Spectrum BASIC
+        ok_num("128>=0 AND 128<=255 AND 88>=0 AND 88<=175", 1.0);
     }
 
     #[test]

@@ -1,10 +1,9 @@
 //! Single-owner state machine for the whole runtime.
 //!
-//! MVP-2 scope: variables, `LET`, numbered program lines, `LIST`, `RUN`,
-//! `GOTO`, `STOP`, `NEW`, `CLS`. Statement parsing is still ad-hoc — a proper
-//! tokenised dispatcher arrives when we extract the full token table from
-//! `02_keyboard.asm` (planned for MVP-2's polish phase or MVP-3).
+//! MVP-3a additions on top of MVP-2: built-in functions (`SIN`, `COS`, ...
+//! `PI`, `RND`), comparison operators in expressions, and `IF cond THEN stmt`.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use crate::display::{Display, CHAR_H, CHAR_W, FRAME_RGBA_LEN};
@@ -34,6 +33,10 @@ pub struct System {
     input_line: String,
     vars: HashMap<String, f64>,
     program: Program,
+    /// PRNG state, used by `RND`. Initial seed is a fixed constant so the
+    /// boot-time sequence is reproducible; `RANDOMIZE n` will override.
+    /// Cell because RND is read via `Env::call_fn(&self, ...)`.
+    prng: Cell<u64>,
 }
 
 impl System {
@@ -46,6 +49,7 @@ impl System {
             input_line: String::new(),
             vars: HashMap::new(),
             program: Program::new(),
+            prng: Cell::new(0x9E3779B97F4A7C15),
         };
         sys.redraw_input();
         sys
@@ -116,7 +120,14 @@ impl System {
             self.println_error("Nonsense in BASIC");
             return;
         };
-        self.program.upsert(n, rest.trim_start().to_string());
+        let body = rest.trim_start().to_string();
+        // Echo the stored line into the print area so the user can see their
+        // program being built up, like on a real Spectrum. Deletions (empty
+        // body) don't echo.
+        if !body.is_empty() {
+            self.display.println(&format!("{} {}", n, body));
+        }
+        self.program.upsert(n, body);
     }
 
     /// Execute a single statement (e.g. one line of a program, or one
@@ -141,6 +152,7 @@ impl System {
             }
             "LIST" => self.cmd_list(),
             "RUN" => self.cmd_run(rest),
+            "IF" => self.cmd_if(rest),
             _ => StepResult::Error("Nonsense in BASIC".to_string()),
         }
     }
@@ -152,7 +164,7 @@ impl System {
             self.display.println("");
             return StepResult::Ok;
         }
-        let env = VarsRef(&self.vars);
+        let env = SysEnv { vars: &self.vars, prng: &self.prng };
         match expression::evaluate_with(args, &env) {
             Ok(v) => {
                 let s = fp_format::format(v);
@@ -172,7 +184,7 @@ impl System {
         if name.is_empty() || !is_valid_var_name(&name) {
             return StepResult::Error("Nonsense in BASIC".to_string());
         }
-        let env = VarsRef(&self.vars);
+        let env = SysEnv { vars: &self.vars, prng: &self.prng };
         match expression::evaluate_with(rhs, &env) {
             Ok(v) => {
                 self.vars.insert(name, v);
@@ -183,7 +195,7 @@ impl System {
     }
 
     fn cmd_goto(&mut self, args: &str) -> StepResult {
-        let env = VarsRef(&self.vars);
+        let env = SysEnv { vars: &self.vars, prng: &self.prng };
         let Ok(v) = expression::evaluate_with(args, &env) else {
             return StepResult::Error("Nonsense in BASIC".to_string());
         };
@@ -215,7 +227,7 @@ impl System {
         let start = if args.trim().is_empty() {
             0u16
         } else {
-            let env = VarsRef(&self.vars);
+            let env = SysEnv { vars: &self.vars, prng: &self.prng };
             match expression::evaluate_with(args, &env) {
                 Ok(v) if (0.0..=65535.0).contains(&v) => v as u16,
                 _ => return StepResult::Error("Nonsense in BASIC".to_string()),
@@ -251,6 +263,31 @@ impl System {
         StepResult::Ok
     }
 
+    fn cmd_if(&mut self, args: &str) -> StepResult {
+        // IF <cond> THEN <stmt>
+        let parsed = {
+            let env = SysEnv {
+                vars: &self.vars,
+                prng: &self.prng,
+            };
+            expression::evaluate_until_keyword(args, "THEN", &env)
+        };
+        match parsed {
+            Ok((cond, rest)) => {
+                if cond != 0.0 {
+                    let rest_owned = rest.trim().to_string();
+                    if rest_owned.is_empty() {
+                        return StepResult::Error("Nonsense in BASIC".to_string());
+                    }
+                    self.execute_statement(&rest_owned)
+                } else {
+                    StepResult::Ok
+                }
+            }
+            Err(_) => StepResult::Error("Nonsense in BASIC".to_string()),
+        }
+    }
+
     fn println_error(&mut self, msg: &str) {
         self.display.println(msg);
     }
@@ -270,13 +307,47 @@ enum StepResult {
     Error(String),
 }
 
-/// Read-only view of System's variables, exposing them to the expression
-/// evaluator as an [`Env`].
-struct VarsRef<'a>(&'a HashMap<String, f64>);
-impl<'a> Env for VarsRef<'a> {
+/// Read-only view of System's variables and PRNG, exposing them to the
+/// expression evaluator as an [`Env`].
+struct SysEnv<'a> {
+    vars: &'a HashMap<String, f64>,
+    prng: &'a Cell<u64>,
+}
+impl<'a> Env for SysEnv<'a> {
     fn get_var(&self, name: &str) -> Option<f64> {
-        self.0.get(name).copied()
+        self.vars.get(name).copied()
     }
+    fn call_fn(&self, name: &str, args: &[f64]) -> Option<f64> {
+        match (name, args) {
+            ("PI", []) => Some(core::f64::consts::PI),
+            ("RND", []) => Some(rnd_next(self.prng)),
+            ("SIN", [x]) => Some(x.sin()),
+            ("COS", [x]) => Some(x.cos()),
+            ("TAN", [x]) => Some(x.tan()),
+            ("ASN", [x]) => Some(x.asin()),
+            ("ACS", [x]) => Some(x.acos()),
+            ("ATN", [x]) => Some(x.atan()),
+            ("LN", [x]) => Some(x.ln()),
+            ("EXP", [x]) => Some(x.exp()),
+            ("INT", [x]) => Some(x.floor()), // Spectrum INT truncates toward -inf
+            ("ABS", [x]) => Some(x.abs()),
+            ("SQR", [x]) => Some(x.sqrt()),
+            ("SGN", [x]) => Some(if *x > 0.0 { 1.0 } else if *x < 0.0 { -1.0 } else { 0.0 }),
+            _ => None,
+        }
+    }
+}
+
+/// Splitmix64-based PRNG step, returning a uniform `f64` in `[0, 1)`.
+fn rnd_next(state: &Cell<u64>) -> f64 {
+    let mut s = state.get();
+    s = s.wrapping_add(0x9E3779B97F4A7C15);
+    state.set(s);
+    let mut z = s;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^= z >> 31;
+    ((z >> 11) as f64) / ((1u64 << 53) as f64)
 }
 
 fn split_leading_number(s: &str) -> (&str, &str) {
@@ -405,6 +476,45 @@ mod tests {
         enter(&mut sys);
         assert!(sys.program.is_empty());
         assert!(sys.vars.is_empty());
+    }
+
+    #[test]
+    fn if_then_branches() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "10 LET A=5");
+        enter(&mut sys);
+        feed_str(&mut sys, "20 IF A>3 THEN LET B=99");
+        enter(&mut sys);
+        feed_str(&mut sys, "30 IF A<3 THEN LET B=42");
+        enter(&mut sys);
+        feed_str(&mut sys, "RUN");
+        enter(&mut sys);
+        assert_eq!(sys.vars.get("B"), Some(&99.0));
+    }
+
+    #[test]
+    fn builtins_resolve_in_print() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "LET A=INT 3.7");
+        enter(&mut sys);
+        assert_eq!(sys.vars.get("A"), Some(&3.0));
+        feed_str(&mut sys, "LET B=ABS -5");
+        enter(&mut sys);
+        assert_eq!(sys.vars.get("B"), Some(&5.0));
+        feed_str(&mut sys, "LET C=SQR 16");
+        enter(&mut sys);
+        assert_eq!(sys.vars.get("C"), Some(&4.0));
+    }
+
+    #[test]
+    fn rnd_produces_unit_interval() {
+        let mut sys = System::new();
+        for _ in 0..50 {
+            feed_str(&mut sys, "LET R=RND");
+            enter(&mut sys);
+            let r = *sys.vars.get("R").unwrap();
+            assert!((0.0..1.0).contains(&r), "RND out of range: {}", r);
+        }
     }
 
     #[test]

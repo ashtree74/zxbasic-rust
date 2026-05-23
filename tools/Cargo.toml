@@ -1,0 +1,13 @@
+[package]
+name = "zxbasic-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "One-shot data-extraction binaries (font, tokens, etc.)."
+
+[[bin]]
+name = "extract-font"
+path = "src/bin/extract_font.rs"
+
+[dependencies]

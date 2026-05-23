@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/zxbasic-core",
+    "crates/zxbasic-web",
+    "crates/zxbasic-native",
+    "tools",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Adam Jesionkiewicz <adam@jesion.pl>"]
+repository = "https://github.com/adamjesionkiewicz/zxbasic-rust"
+
+[workspace.dependencies]
+zxbasic-core = { path = "crates/zxbasic-core" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

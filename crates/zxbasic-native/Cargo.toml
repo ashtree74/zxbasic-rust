@@ -1,0 +1,16 @@
+[package]
+name = "zxbasic-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Desktop dev harness for zxbasic-core (winit + softbuffer)."
+
+[[bin]]
+name = "zxbasic-native"
+path = "src/main.rs"
+
+[dependencies]
+zxbasic-core = { workspace = true }
+winit = "0.30"
+softbuffer = "0.4"

@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+.DS_Store
+/crates/zxbasic-web/pkg
+/web/pkg
+*.wasm.opt

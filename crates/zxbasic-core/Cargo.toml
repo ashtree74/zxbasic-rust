@@ -1,0 +1,15 @@
+[package]
+name = "zxbasic-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Platform-agnostic ZX Spectrum BASIC runtime: interpreter, editor, display, keyboard."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+
+[features]
+default = []

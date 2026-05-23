@@ -54,6 +54,13 @@ impl System {
     pub fn feed_backspace(&mut self) {
         self.inner.feed_key(Key::Backspace);
     }
+
+    /// Current screen-border colour as a packed RGB integer (0xRRGGBB).
+    /// JS reads this every frame to keep the border around the canvas in sync.
+    pub fn border_rgb_packed(&self) -> u32 {
+        let [r, g, b] = self.inner.border_rgb();
+        ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+    }
 }
 
 impl Default for System {

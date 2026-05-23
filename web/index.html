@@ -2,17 +2,29 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>zxbasic-rust — MVP-5b</title>
+  <title>zxbasic-rust</title>
   <style>
-    html, body { margin: 0; background: #181818; color: #ddd; font: 14px/1.4 system-ui, sans-serif; }
-    body { display: flex; align-items: center; justify-content: center; min-height: 100vh; flex-direction: column; gap: 1rem; }
-    canvas { image-rendering: pixelated; border: 1px solid #333; display: block; }
-    .caption { opacity: .6; }
+    html, body {
+      margin: 0; padding: 0; height: 100%; overflow: hidden;
+      background: #cdcdcd; /* will be overwritten per frame to the BORDER colour */
+      font-family: system-ui, sans-serif;
+      cursor: default;
+    }
+    body {
+      display: flex; align-items: center; justify-content: center;
+      transition: background-color 60ms linear;
+    }
+    canvas {
+      image-rendering: pixelated;
+      display: block;
+      outline: none;
+      /* Sized via inline style at runtime to fit the viewport while keeping
+         the Spectrum 4:3 aspect ratio (256:192 == 4:3). */
+    }
   </style>
 </head>
 <body>
-  <canvas id="screen" width="256" height="192" style="width: 512px; height: 384px;" tabindex="0"></canvas>
-  <div class="caption">zxbasic-rust · MVP-5b · try <code>DIM A(5)</code> / <code>LET A(1)=42</code> / <code>PRINT A(1)</code></div>
+  <canvas id="screen" width="256" height="192" tabindex="0"></canvas>
   <script type="module">
     import init, { System } from "./pkg/zxbasic_web.js";
 
@@ -22,14 +34,48 @@
     const ctx = canvas.getContext("2d");
     canvas.focus();
 
+    // Scale the canvas to fit the viewport, keeping the Spectrum 4:3
+    // aspect ratio. The remaining viewport area shows the BORDER colour.
+    function resize() {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const targetAspect = 256 / 192; // 4:3
+      let cw, ch;
+      if (vw / vh > targetAspect) {
+        ch = vh;
+        cw = ch * targetAspect;
+      } else {
+        cw = vw;
+        ch = cw / targetAspect;
+      }
+      // Snap to integer pixel sizes that are nice multiples of 256/192 when
+      // possible, to keep the pixel grid crisp at common sizes.
+      const scale = Math.max(1, Math.floor(Math.min(vw / 256, vh / 192)));
+      if (256 * scale <= vw && 192 * scale <= vh) {
+        cw = 256 * scale;
+        ch = 192 * scale;
+      }
+      canvas.style.width  = cw + "px";
+      canvas.style.height = ch + "px";
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
     function frame() {
       const buf = sys.render();
       const img = new ImageData(new Uint8ClampedArray(buf), 256, 192);
       ctx.putImageData(img, 0, 0);
+      // Sync the body background to the current Spectrum BORDER colour.
+      const rgb = sys.border_rgb_packed();
+      const css = "#" + rgb.toString(16).padStart(6, "0");
+      if (document.body.style.backgroundColor !== css) {
+        document.body.style.backgroundColor = css;
+      }
       requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
 
+    // Keyboard goes to the document so users don't have to click the canvas.
     document.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         sys.feed_enter();

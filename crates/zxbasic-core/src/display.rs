@@ -343,7 +343,9 @@ impl Default for Display {
 }
 
 fn glyph_for(ch: char) -> &'static [u8; 8] {
-    let cp = ch as u32;
+    // Spectrum charset puts the copyright sign at code 0x7F (last printable
+    // glyph of the standard set). Unicode `©` is U+00A9; remap it.
+    let cp: u32 = if ch == '\u{00A9}' { 0x7F } else { ch as u32 };
     let first = FONT_FIRST_CHAR as u32;
     let last = first + FONT_GLYPH_COUNT as u32 - 1;
     if cp >= first && cp <= last {
@@ -351,6 +353,12 @@ fn glyph_for(ch: char) -> &'static [u8; 8] {
     } else {
         &FONT[0]
     }
+}
+
+/// RGB lookup for a Spectrum colour 0..7 with optional BRIGHT.
+pub fn spectrum_palette(colour: u8, bright: bool) -> [u8; 3] {
+    let idx = (colour & 7) as usize + if bright { 8 } else { 0 };
+    PALETTE[idx]
 }
 
 /// Build a Spectrum-style attribute byte from its parts.

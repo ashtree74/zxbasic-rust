@@ -57,6 +57,9 @@ pub struct System {
     /// the screen). Updated by PLOT and DRAW.
     pen_x: i32,
     pen_y: i32,
+    /// Colour of the screen border (BORDER 0..7). Default 7 (white) to
+    /// match Spectrum boot.
+    current_border: u8,
 }
 
 #[derive(Clone)]
@@ -101,6 +104,7 @@ impl System {
             current_flash: false,
             pen_x: 0,
             pen_y: 0,
+            current_border: 7,
         };
         sys.redraw_input();
         sys
@@ -266,6 +270,7 @@ impl System {
             "PLOT" => self.cmd_plot(rest),
             "DRAW" => self.cmd_draw(rest),
             "CIRCLE" => self.cmd_circle(rest),
+            "BORDER" => self.cmd_border(rest),
             _ => StepResult::Error("Nonsense in BASIC".to_string()),
         }
     }
@@ -399,6 +404,25 @@ impl System {
             }
         }
         StepResult::Ok
+    }
+
+    fn cmd_border(&mut self, args: &str) -> StepResult {
+        let env = self.env_view();
+        let Ok(n) = expression::evaluate_with(args, &env).and_then(|v| v.as_num()) else {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        };
+        let n = n as i32;
+        if !(0..=7).contains(&n) {
+            return StepResult::Error("Integer out of range".to_string());
+        }
+        self.current_border = n as u8;
+        StepResult::Ok
+    }
+
+    /// RGB triple of the current screen border, for the host UI to render
+    /// around the canvas.
+    pub fn border_rgb(&self) -> [u8; 3] {
+        crate::display::spectrum_palette(self.current_border, false)
     }
 
     fn cmd_plot(&mut self, args: &str) -> StepResult {
@@ -1124,10 +1148,10 @@ fn is_valid_var_name(name: &str) -> bool {
 }
 
 fn paint_boot_screen(d: &mut Display) {
-    let line_a = "(c) 2026 zxbasic-rust";
-    let line_b = "based on Sinclair 1982 ROM";
-    d.print_str(0, CHAR_H - 4, line_a);
-    d.print_str(0, CHAR_H - 3, line_b);
+    // Match the 1982 ROM boot screen: a single line near the bottom of the
+    // upper screen. Position chosen empirically to match real Spectrum
+    // photographs (row 21, column 1).
+    d.print_str(1, 21, "\u{00A9} 1982 Sinclair Research Ltd");
 }
 
 #[cfg(test)]

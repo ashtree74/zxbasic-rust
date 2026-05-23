@@ -442,85 +442,116 @@ impl System {
     }
 
     fn cmd_print(&mut self, args: &str) -> StepResult {
-        // Items separated by `;` (no separator), `,` (TAB to half-screen),
-        // or `'` (newline). A `AT row, col;` or `TAB n;` item moves the
-        // print cursor before the next item. Trailing separator means no
-        // newline; otherwise PRINT ends with a newline.
+        // Streaming PRINT parser. Items separated by `;` (no padding),
+        // `,` (tab to column 16 — Spectrum's half-screen) or `'`
+        // (newline). `AT row,col` and `TAB n` are inline modifiers that
+        // own one or two argument expressions; the comma inside `AT n,m`
+        // is *not* a separator.
         let attr = self.current_attr();
-        if args.trim().is_empty() {
+        let args = args.trim();
+        if args.is_empty() {
             self.display.print_with_attr("\n", attr);
             return StepResult::Ok;
         }
-        let items = split_print_items(args);
+        let bytes = args.as_bytes();
+        let mut pos: usize = 0;
         let mut produced_value = false;
-        for item in &items {
-            let item = item.trim();
-            if item.is_empty() {
-                continue;
+        let mut last_was_separator = false;
+
+        while pos < bytes.len() {
+            // Skip whitespace.
+            while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+                pos += 1;
             }
-            let upper = item.to_ascii_uppercase();
-            if let Some(rest) = upper.strip_prefix("AT") {
-                // AT row, col
-                if !rest.starts_with(|c: char| c.is_ascii_whitespace() || c == '(') {
-                    return self.print_value_item(item, attr).map(|_| {
-                        produced_value = true;
-                    }).err().map(StepResult::Error)
-                        .unwrap_or(StepResult::Ok);
-                }
-                let coord_src = &item[2..];
-                let Some((row_src, col_src)) = coord_src.split_once(',') else {
+            if pos >= bytes.len() {
+                break;
+            }
+            // AT row, col — modifier, no value emitted.
+            if matches_keyword(args, pos, "AT") {
+                pos += 2;
+                let row_end = find_top_level_print_sep(args, pos);
+                // For AT we need the *first* comma to belong to AT itself.
+                // Walk to that comma; if the first separator we hit isn't
+                // a comma the syntax is bad.
+                let row_src = &args[pos..row_end];
+                let next_char = bytes.get(row_end).copied();
+                if next_char != Some(b',') {
                     return StepResult::Error("Nonsense in BASIC".to_string());
-                };
-                let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns, arrays: &self.arrays };
+                }
+                let col_start = row_end + 1;
+                let col_end = find_top_level_print_sep(args, col_start);
+                let col_src = &args[col_start..col_end];
+                let env = self.env_view();
                 let row = expression::evaluate_with(row_src, &env).and_then(|v| v.as_num());
                 let col = expression::evaluate_with(col_src, &env).and_then(|v| v.as_num());
                 match (row, col) {
-                    (Ok(r), Ok(c)) => {
-                        self.display.set_print_cursor(c as usize, r as usize);
-                    }
+                    (Ok(r), Ok(c)) => self.display.set_print_cursor(c as usize, r as usize),
                     _ => return StepResult::Error("Nonsense in BASIC".to_string()),
                 }
-                continue;
-            }
-            if let Some(rest) = upper.strip_prefix("TAB") {
-                if !rest.starts_with(|c: char| c.is_ascii_whitespace() || c == '(') {
-                    if let Err(e) = self.print_value_item(item, attr) {
-                        return StepResult::Error(e);
-                    }
-                    produced_value = true;
-                    continue;
-                }
-                let n_src = &item[3..];
-                let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns, arrays: &self.arrays };
+                pos = col_end;
+                last_was_separator = false;
+            } else if matches_keyword(args, pos, "TAB") {
+                pos += 3;
+                let end = find_top_level_print_sep(args, pos);
+                let n_src = &args[pos..end];
+                let env = self.env_view();
                 let Ok(n) = expression::evaluate_with(n_src, &env).and_then(|v| v.as_num()) else {
                     return StepResult::Error("Nonsense in BASIC".to_string());
                 };
                 let target_col = (n as usize) % CHAR_W;
-                let (cur_col, cur_row) = self.display.print_cursor();
+                let (cur_col, _) = self.display.print_cursor();
                 if target_col >= cur_col {
                     let pad: String = " ".repeat(target_col - cur_col);
                     self.display.print_with_attr(&pad, attr);
                 } else {
-                    // TAB to a column we've passed → newline and move to it.
                     self.display.print_with_attr("\n", attr);
-                    let _ = cur_row;
                     let pad: String = " ".repeat(target_col);
                     self.display.print_with_attr(&pad, attr);
                 }
-                continue;
+                pos = end;
+                last_was_separator = false;
+            } else if bytes[pos] == b';' || bytes[pos] == b',' || bytes[pos] == b'\'' {
+                let c = bytes[pos];
+                pos += 1;
+                match c {
+                    b';' => { /* no padding */ }
+                    b',' => {
+                        // Spectrum's comma tab: move to column 16, or to
+                        // column 0 of the next line if we've passed it.
+                        let (cur_col, _) = self.display.print_cursor();
+                        let target = 16usize;
+                        if cur_col < target {
+                            let pad: String = " ".repeat(target - cur_col);
+                            self.display.print_with_attr(&pad, attr);
+                        } else {
+                            self.display.print_with_attr("\n", attr);
+                        }
+                    }
+                    b'\'' => {
+                        self.display.print_with_attr("\n", attr);
+                    }
+                    _ => unreachable!(),
+                }
+                last_was_separator = true;
+            } else {
+                // Plain expression item — print its value.
+                let end = find_top_level_print_sep(args, pos);
+                let src = &args[pos..end];
+                if let Err(e) = self.print_value_item(src.trim(), attr) {
+                    return StepResult::Error(e);
+                }
+                produced_value = true;
+                pos = end;
+                last_was_separator = false;
             }
-            // Otherwise evaluate as an expression and print its value.
-            if let Err(e) = self.print_value_item(item, attr) {
-                return StepResult::Error(e);
-            }
-            produced_value = true;
         }
-        // Decide whether to append a newline. If the user ended with a
-        // separator (last char of args trimmed-right is `;` or `,`), no
-        // newline; otherwise newline.
-        let trimmed_end = args.trim_end();
-        let ends_in_sep = trimmed_end.ends_with(';') || trimmed_end.ends_with(',');
-        if !ends_in_sep && produced_value {
+        // PRINT terminates with a newline *unless* the source ended on a
+        // suppressing separator (`;` or `,`).
+        if !last_was_separator && produced_value {
+            self.display.print_with_attr("\n", attr);
+        } else if !produced_value && !last_was_separator {
+            // Edge case: only modifiers, no values, no separators. Match
+            // Spectrum: still emit a newline.
             self.display.print_with_attr("\n", attr);
         }
         StepResult::Ok
@@ -1248,30 +1279,48 @@ enum ColourKind {
     Flash,
 }
 
-/// Split a PRINT argument list on top-level `;`. Comma is intentionally NOT
-/// a separator here: in Spectrum BASIC `,` *is* the half-screen tab in PRINT,
-/// but it also belongs to the inner arguments of `AT row,col` / `TAB n`.
-/// Treating it as part of items lets `PRINT AT 5,10;"HI"` parse cleanly; the
-/// half-screen tab semantics arrive in MVP-5 alongside a proper PRINT-item
-/// parser. String literals are still respected.
-fn split_print_items(src: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut in_str = false;
-    for c in src.chars() {
-        if c == '"' {
-            in_str = !in_str;
-            cur.push(c);
-            continue;
-        }
-        if !in_str && c == ';' {
-            out.push(std::mem::take(&mut cur));
-            continue;
-        }
-        cur.push(c);
+/// Does `src[pos..]` start with the BASIC keyword `kw` (case-insensitive)
+/// as a whole word (not part of an identifier)?
+fn matches_keyword(src: &str, pos: usize, kw: &str) -> bool {
+    let bytes = src.as_bytes();
+    if pos + kw.len() > bytes.len() {
+        return false;
     }
-    out.push(cur);
-    out
+    for (i, kb) in kw.as_bytes().iter().enumerate() {
+        if !bytes[pos + i].eq_ignore_ascii_case(kb) {
+            return false;
+        }
+    }
+    match bytes.get(pos + kw.len()) {
+        None => true,
+        Some(&b) => !b.is_ascii_alphanumeric() && b != b'$',
+    }
+}
+
+/// Find the first byte offset in `src[start..]` that ends a PRINT
+/// expression — a top-level `;`, `,`, `'`, or end-of-input. Top-level
+/// means outside string literals and outside parentheses.
+fn find_top_level_print_sep(src: &str, start: usize) -> usize {
+    let bytes = src.as_bytes();
+    let mut depth: i32 = 0;
+    let mut in_str = false;
+    let mut i = start;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'"' {
+            in_str = !in_str;
+        } else if !in_str {
+            if b == b'(' {
+                depth += 1;
+            } else if b == b')' {
+                depth -= 1;
+            } else if depth == 0 && (b == b';' || b == b',' || b == b'\'') {
+                return i;
+            }
+        }
+        i += 1;
+    }
+    bytes.len()
 }
 
 /// Split `src` on the first occurrence of `kw` matched as a whole word
@@ -1774,6 +1823,48 @@ mod tests {
         feed_str(&mut sys, "LET A=\"hi\"");
         enter(&mut sys);
         assert!(sys.vars.get("A").is_none());
+    }
+
+    #[test]
+    fn print_comma_separator_does_not_break_parse() {
+        // PRINT with comma-separated values used to choke on `a,b`. Now
+        // each item is a top-level expression and `,` just inserts the
+        // half-screen tab between them.
+        let mut sys = System::new();
+        feed_str(&mut sys, "LET A=1: LET B=2: PRINT A,B");
+        enter(&mut sys);
+        // No assertion on screen content; the point is the line shouldn't
+        // produce "Nonsense in BASIC". An error would leave status_line
+        // starting with "1 Nonsense".
+        assert!(
+            !sys.status_line.starts_with("1 Nonsense"),
+            "PRINT a,b should parse, got: {:?}",
+            sys.status_line
+        );
+    }
+
+    #[test]
+    fn print_read_with_comma_lists() {
+        // The DATA/READ canonical sample from the manual reuses comma
+        // separators in both READ and PRINT — has to round-trip without
+        // false-positive "Nonsense" errors.
+        let mut sys = System::new();
+        feed_str(&mut sys, "10 READ a,b");
+        enter(&mut sys);
+        feed_str(&mut sys, "20 PRINT a,b");
+        enter(&mut sys);
+        feed_str(&mut sys, "30 DATA 1,2");
+        enter(&mut sys);
+        feed_str(&mut sys, "RUN");
+        enter(&mut sys);
+        drive(&mut sys);
+        assert_eq!(num(&sys, "A"), Some(1.0));
+        assert_eq!(num(&sys, "B"), Some(2.0));
+        assert!(
+            !sys.status_line.starts_with("1 Nonsense"),
+            "expected clean OK, got: {:?}",
+            sys.status_line
+        );
     }
 
     #[test]

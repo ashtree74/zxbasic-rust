@@ -309,33 +309,35 @@ impl<'a, 'e> Parser<'a, 'e> {
                         .call_fn(&name, &[arg])
                         .ok_or(EvalError::UnknownFunction(name))
                 } else {
-                    // Possible array access: NAME(idx1, idx2, ...). We only
-                    // commit to it if the next char is `(`; otherwise treat
-                    // it as a plain variable lookup.
                     self.skip_ws();
                     if self.peek() == Some('(') {
-                        self.bump();
-                        let mut indices = Vec::new();
-                        // Parse a non-empty comma-separated list of numeric
-                        // indices.
-                        loop {
-                            let v = self.expr()?.as_num()?;
-                            indices.push(v);
-                            self.skip_ws();
-                            match self.peek() {
-                                Some(',') => {
-                                    self.bump();
+                        if name.ends_with('$') {
+                            // String slicing: A$(n), A$(n TO m), A$(TO m),
+                            // A$(n TO), A$(TO).
+                            self.parse_string_slice(&name)
+                        } else {
+                            // Numeric array access: A(i, j, ...).
+                            self.bump();
+                            let mut indices = Vec::new();
+                            loop {
+                                let v = self.expr()?.as_num()?;
+                                indices.push(v);
+                                self.skip_ws();
+                                match self.peek() {
+                                    Some(',') => {
+                                        self.bump();
+                                    }
+                                    Some(')') => {
+                                        self.bump();
+                                        break;
+                                    }
+                                    _ => return Err(EvalError::MissingCloseParen),
                                 }
-                                Some(')') => {
-                                    self.bump();
-                                    break;
-                                }
-                                _ => return Err(EvalError::MissingCloseParen),
                             }
+                            self.env
+                                .get_array(&name, &indices)
+                                .ok_or(EvalError::UnknownVariable(name))
                         }
-                        self.env
-                            .get_array(&name, &indices)
-                            .ok_or(EvalError::UnknownVariable(name))
                     } else {
                         self.env
                             .get_var(&name)
@@ -344,6 +346,90 @@ impl<'a, 'e> Parser<'a, 'e> {
                 }
             }
             _ => self.primary(),
+        }
+    }
+
+    /// Parse a Spectrum string-slice suffix on a `$`-suffixed identifier
+    /// after we've seen the opening `(`. Recognised shapes:
+    ///   `a$(n)`         — n-th byte (single character)
+    ///   `a$(n TO m)`    — bytes n..=m
+    ///   `a$(n TO)`      — bytes n..=end
+    ///   `a$(TO m)`      — bytes 1..=m
+    ///   `a$(TO)` / `a$()` — entire string
+    /// Out-of-range indices clamp to the string ends (Spectrum tolerates
+    /// reasonable overshoots and clips the result), with the empty-string
+    /// case when `start > end`.
+    fn parse_string_slice(&mut self, name: &str) -> Result<Value, EvalError> {
+        let v = self.env.get_var(name).ok_or_else(|| {
+            EvalError::UnknownVariable(name.to_string())
+        })?;
+        let bytes = match v {
+            Value::Str(b) => b,
+            Value::Num(_) => return Err(EvalError::TypeMismatch),
+        };
+
+        self.bump(); // opening '('
+        self.skip_ws();
+
+        // Optional start.
+        let start = if self.peek() != Some(')') && !self.peek_keyword("TO") {
+            Some(self.expr()?.as_num()? as i64)
+        } else {
+            None
+        };
+        self.skip_ws();
+
+        let has_to = self.peek_keyword("TO");
+        let (from1, to1) = if has_to {
+            self.consume_keyword("TO");
+            self.skip_ws();
+            let end = if self.peek() != Some(')') {
+                Some(self.expr()?.as_num()? as i64)
+            } else {
+                None
+            };
+            (start.unwrap_or(1), end.unwrap_or(bytes.len() as i64))
+        } else {
+            // Single index — Spectrum's a$(n) is the one-character slice
+            // bytes[n-1..n].
+            let s = start.ok_or(EvalError::Nonsense)?;
+            (s, s)
+        };
+
+        self.skip_ws();
+        if !self.eat(')') {
+            return Err(EvalError::MissingCloseParen);
+        }
+
+        let len = bytes.len() as i64;
+        let from = from1.max(1).min(len + 1) - 1; // clamp & convert to 0-based
+        let to = to1.max(0).min(len);
+        if from >= to {
+            return Ok(Value::Str(Vec::new()));
+        }
+        Ok(Value::Str(bytes[from as usize..to as usize].to_vec()))
+    }
+
+    /// Peek without consuming: is the next identifier-shaped token equal
+    /// to `kw` (uppercased)?
+    fn peek_keyword(&mut self, kw: &str) -> bool {
+        let mut tmp = self.chars.clone();
+        let mut buf = String::new();
+        while let Some(&c) = tmp.peek() {
+            if c.is_ascii_alphanumeric() {
+                buf.push(c.to_ascii_uppercase());
+                tmp.next();
+            } else {
+                break;
+            }
+        }
+        buf == kw
+    }
+
+    /// Advance past a known keyword previously detected by `peek_keyword`.
+    fn consume_keyword(&mut self, kw: &str) {
+        for _ in 0..kw.len() {
+            self.bump();
         }
     }
 
@@ -642,6 +728,43 @@ mod tests {
         ok_num("SIN(0)+COS(0)", 1.0);
         ok_num("PI", core::f64::consts::PI);
         ok_num("RND", 0.5);
+    }
+
+    #[test]
+    fn string_slicing() {
+        let env = TestEnv {
+            vars: HashMap::from([("A$", Value::Str(b"TEREFEREKUKU".to_vec()))]),
+        };
+        // Single index.
+        match evaluate_with("A$(1)", &env).unwrap() {
+            Value::Str(s) => assert_eq!(s, b"T"),
+            _ => panic!("expected str"),
+        }
+        // Range.
+        match evaluate_with("A$(1 TO 5)", &env).unwrap() {
+            Value::Str(s) => assert_eq!(s, b"TEREF"),
+            _ => panic!("expected str"),
+        }
+        // Open-ended right.
+        match evaluate_with("A$(8 TO)", &env).unwrap() {
+            Value::Str(s) => assert_eq!(s, b"EKUKU"),
+            _ => panic!("expected str"),
+        }
+        // Open-ended left.
+        match evaluate_with("A$(TO 4)", &env).unwrap() {
+            Value::Str(s) => assert_eq!(s, b"TERE"),
+            _ => panic!("expected str"),
+        }
+        // Whole string.
+        match evaluate_with("A$(TO)", &env).unwrap() {
+            Value::Str(s) => assert_eq!(s, b"TEREFEREKUKU"),
+            _ => panic!("expected str"),
+        }
+        // Out-of-range clamp.
+        match evaluate_with("A$(100 TO)", &env).unwrap() {
+            Value::Str(s) => assert_eq!(s, b""),
+            _ => panic!("expected str"),
+        }
     }
 
     #[test]

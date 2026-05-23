@@ -38,6 +38,9 @@ pub struct System {
     /// User-defined functions (DEF FN). Single-parameter; body stored as raw
     /// source so RUN can re-parse it under each call's local scope.
     user_fns: HashMap<String, UserFn>,
+    /// Numeric arrays declared by `DIM` (1D for MVP-5b; multi-dim later).
+    /// Strings stored as a separate map in MVP-5c.
+    arrays: HashMap<String, Vec<f64>>,
     /// Set while RUN is iterating a line; used by `FOR` to capture the
     /// matching return point for `NEXT`.
     current_line: Option<u16>,
@@ -89,6 +92,7 @@ impl System {
             for_stack: Vec::new(),
             gosub_stack: Vec::new(),
             user_fns: HashMap::new(),
+            arrays: HashMap::new(),
             current_line: None,
             pending_input: None,
             current_ink: 0,
@@ -124,7 +128,10 @@ impl System {
     pub fn feed_key(&mut self, key: Key) {
         match key {
             Key::Char(b) if (32..=126).contains(&b) => {
-                if self.input_line.len() < CHAR_W - 1 {
+                // Generous limit; the input row only shows the last CHAR_W
+                // characters, but the buffer itself can be longer (a full
+                // Spectrum-style multi-line editor lands in MVP-6).
+                if self.input_line.len() < 255 {
                     self.input_line.push(b as char);
                 }
             }
@@ -147,8 +154,16 @@ impl System {
     fn redraw_input(&mut self) {
         let prompt = if self.pending_input.is_some() { "?" } else { "" };
         let combined = format!("{}{}", prompt, self.input_line);
-        let cursor_col = combined.chars().count().min(CHAR_W - 1);
-        self.display.print_input(&combined, cursor_col);
+        // Only the trailing CHAR_W characters fit on the input row; show the
+        // tail so the cursor stays visible while typing past column 32.
+        let chars: Vec<char> = combined.chars().collect();
+        let visible: String = if chars.len() >= CHAR_W {
+            chars[chars.len() - (CHAR_W - 1)..].iter().collect()
+        } else {
+            chars.iter().collect()
+        };
+        let cursor_col = visible.chars().count().min(CHAR_W - 1);
+        self.display.print_input(&visible, cursor_col);
     }
 
     fn resolve_pending_input(&mut self, pending: PendingInput, raw: &str) {
@@ -225,12 +240,14 @@ impl System {
                 self.for_stack.clear();
                 self.gosub_stack.clear();
                 self.user_fns.clear();
+                self.arrays.clear();
                 self.pending_input = None;
                 StepResult::Ok
             }
             "GOSUB" => self.cmd_gosub(rest),
             "RETURN" => self.cmd_return(),
             "DEF" => self.cmd_def(rest),
+            "DIM" => self.cmd_dim(rest),
             "CLS" => {
                 let attr = self.current_attr();
                 self.display.cls(attr);
@@ -283,7 +300,7 @@ impl System {
                 let Some((row_src, col_src)) = coord_src.split_once(',') else {
                     return StepResult::Error("Nonsense in BASIC".to_string());
                 };
-                let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
+                let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns, arrays: &self.arrays };
                 let row = expression::evaluate_with(row_src, &env).and_then(|v| v.as_num());
                 let col = expression::evaluate_with(col_src, &env).and_then(|v| v.as_num());
                 match (row, col) {
@@ -303,7 +320,7 @@ impl System {
                     continue;
                 }
                 let n_src = &item[3..];
-                let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
+                let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns, arrays: &self.arrays };
                 let Ok(n) = expression::evaluate_with(n_src, &env).and_then(|v| v.as_num()) else {
                     return StepResult::Error("Nonsense in BASIC".to_string());
                 };
@@ -339,7 +356,7 @@ impl System {
     }
 
     fn print_value_item(&mut self, src: &str, attr: u8) -> Result<(), String> {
-        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
+        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns, arrays: &self.arrays };
         match expression::evaluate_with(src, &env) {
             Ok(v) => {
                 self.display.print_with_attr(&format_value(&v), attr);
@@ -350,7 +367,7 @@ impl System {
     }
 
     fn cmd_set_colour(&mut self, args: &str, kind: ColourKind) -> StepResult {
-        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
+        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns, arrays: &self.arrays };
         let Ok(n) = expression::evaluate_with(args, &env).and_then(|v| v.as_num()) else {
             return StepResult::Error("Nonsense in BASIC".to_string());
         };
@@ -388,7 +405,7 @@ impl System {
         let Some((x_src, y_src)) = args.split_once(',') else {
             return StepResult::Error("Nonsense in BASIC".to_string());
         };
-        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
+        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns, arrays: &self.arrays };
         let x = expression::evaluate_with(x_src, &env).and_then(|v| v.as_num());
         let y = expression::evaluate_with(y_src, &env).and_then(|v| v.as_num());
         match (x, y) {
@@ -410,7 +427,7 @@ impl System {
         let Some((dx_src, dy_src)) = args.split_once(',') else {
             return StepResult::Error("Nonsense in BASIC".to_string());
         };
-        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
+        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns, arrays: &self.arrays };
         let dx = expression::evaluate_with(dx_src, &env).and_then(|v| v.as_num());
         let dy = expression::evaluate_with(dy_src, &env).and_then(|v| v.as_num());
         match (dx, dy) {
@@ -433,7 +450,7 @@ impl System {
         if parts.len() != 3 {
             return StepResult::Error("Nonsense in BASIC".to_string());
         }
-        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
+        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns, arrays: &self.arrays };
         let x = expression::evaluate_with(parts[0], &env).and_then(|v| v.as_num());
         let y = expression::evaluate_with(parts[1], &env).and_then(|v| v.as_num());
         let r = expression::evaluate_with(parts[2], &env).and_then(|v| v.as_num());
@@ -450,22 +467,56 @@ impl System {
     }
 
     fn cmd_let(&mut self, args: &str) -> StepResult {
-        let Some((lhs, rhs)) = args.split_once('=') else {
+        let Some(eq_pos) = find_top_level_assignment_eq(args) else {
             return StepResult::Error("Nonsense in BASIC".to_string());
         };
-        let name = normalise_var_name(lhs.trim());
+        let lhs_raw = args[..eq_pos].trim();
+        let rhs = &args[eq_pos + 1..];
+
+        // Array-element assignment: LET A(i) = expr
+        if let Some(open_idx) = lhs_raw.find('(') {
+            let name = normalise_var_name(lhs_raw[..open_idx].trim());
+            if !is_valid_var_name(&name) {
+                return StepResult::Error("Nonsense in BASIC".to_string());
+            }
+            let inside = &lhs_raw[open_idx + 1..];
+            let Some(close_idx) = inside.rfind(')') else {
+                return StepResult::Error("Nonsense in BASIC".to_string());
+            };
+            let idx_src = &inside[..close_idx];
+            let (idx, value) = {
+                let env = self.env_view();
+                let idx = expression::evaluate_with(idx_src, &env).and_then(|v| v.as_num());
+                let value = expression::evaluate_with(rhs, &env).and_then(|v| v.as_num());
+                (idx, value)
+            };
+            let (idx, value) = match (idx, value) {
+                (Ok(i), Ok(v)) => (i, v),
+                _ => return StepResult::Error("Nonsense in BASIC".to_string()),
+            };
+            let Some(arr) = self.arrays.get_mut(&name) else {
+                return StepResult::Error("Subscript wrong".to_string());
+            };
+            let i = idx as i64;
+            if i < 1 || (i as usize) > arr.len() {
+                return StepResult::Error("Subscript wrong".to_string());
+            }
+            arr[i as usize - 1] = value;
+            return StepResult::Ok;
+        }
+
+        // Scalar assignment.
+        let name = normalise_var_name(lhs_raw);
         if name.is_empty() || !is_valid_var_name(&name) {
             return StepResult::Error("Nonsense in BASIC".to_string());
         }
-        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
+        let env = self.env_view();
         match expression::evaluate_with(rhs, &env) {
             Ok(v) => {
-                // Spectrum type rule: a string variable (name ends with `$`)
-                // accepts only strings, and a numeric variable only numbers.
-                let typed_ok = match (&v, is_string_name(&name)) {
-                    (Value::Str(_), true) | (Value::Num(_), false) => true,
-                    _ => false,
-                };
+                let typed_ok = matches!(
+                    (&v, is_string_name(&name)),
+                    (Value::Str(_), true) | (Value::Num(_), false)
+                );
                 if !typed_ok {
                     return StepResult::Error("Nonsense in BASIC".to_string());
                 }
@@ -476,8 +527,37 @@ impl System {
         }
     }
 
+    fn cmd_dim(&mut self, args: &str) -> StepResult {
+        let args = args.trim();
+        let Some(open_idx) = args.find('(') else {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        };
+        let name = normalise_var_name(args[..open_idx].trim());
+        if !is_valid_var_name(&name) || is_string_name(&name) {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        }
+        let inside = &args[open_idx + 1..];
+        let Some(close_idx) = inside.rfind(')') else {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        };
+        let size_src = &inside[..close_idx];
+        let n = {
+            let env = self.env_view();
+            expression::evaluate_with(size_src, &env).and_then(|v| v.as_num())
+        };
+        let Ok(n) = n else {
+            return StepResult::Error("Nonsense in BASIC".to_string());
+        };
+        let n = n as i64;
+        if n < 1 || n > 10_000 {
+            return StepResult::Error("Subscript wrong".to_string());
+        }
+        self.arrays.insert(name, vec![0.0; n as usize]);
+        StepResult::Ok
+    }
+
     fn cmd_goto(&mut self, args: &str) -> StepResult {
-        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
+        let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns, arrays: &self.arrays };
         let v = match expression::evaluate_with(args, &env) {
             Ok(v) => match v.as_num() {
                 Ok(n) => n,
@@ -508,11 +588,12 @@ impl System {
         self.vars.clear();
         self.for_stack.clear();
         self.gosub_stack.clear();
+        self.arrays.clear();
         self.pending_input = None;
         let start = if args.trim().is_empty() {
             0u16
         } else {
-            let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
+            let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns, arrays: &self.arrays };
             match expression::evaluate_with(args, &env).and_then(|v| v.as_num()) {
                 Ok(v) if (0.0..=65535.0).contains(&v) => v as u16,
                 _ => return StepResult::Error("Nonsense in BASIC".to_string()),
@@ -617,7 +698,7 @@ impl System {
             None => (after_to, None),
         };
         let triple = {
-            let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns };
+            let env = SysEnv { vars: &self.vars, prng: &self.prng, user_fns: &self.user_fns, arrays: &self.arrays };
             let s = expression::evaluate_with(start_src, &env).and_then(|v| v.as_num());
             let e = expression::evaluate_with(end_src, &env).and_then(|v| v.as_num());
             let st = match step_src {
@@ -740,6 +821,7 @@ impl System {
             vars: &self.vars,
             prng: &self.prng,
             user_fns: &self.user_fns,
+            arrays: &self.arrays,
         }
     }
 
@@ -853,10 +935,22 @@ struct SysEnv<'a> {
     vars: &'a HashMap<String, Value>,
     prng: &'a Cell<u64>,
     user_fns: &'a HashMap<String, UserFn>,
+    arrays: &'a HashMap<String, Vec<f64>>,
 }
 impl<'a> Env for SysEnv<'a> {
     fn get_var(&self, name: &str) -> Option<Value> {
         self.vars.get(name).cloned()
+    }
+    fn get_array(&self, name: &str, indices: &[f64]) -> Option<Value> {
+        let arr = self.arrays.get(name)?;
+        if indices.len() != 1 {
+            return None;
+        }
+        let i = indices[0] as i64;
+        if i < 1 || (i as usize) > arr.len() {
+            return None;
+        }
+        Some(Value::Num(arr[i as usize - 1]))
     }
     fn call_user_fn(&self, name: &str, arg: Value) -> Option<Value> {
         let def = self.user_fns.get(name)?;
@@ -928,6 +1022,28 @@ impl<'a> Env for UserFnEnv<'a> {
     fn call_user_fn(&self, name: &str, arg: Value) -> Option<Value> {
         self.parent.call_user_fn(name, arg)
     }
+}
+
+/// Find the byte index of the `=` that separates an assignment's LHS from
+/// its RHS — at top level, i.e. not inside `(...)` or `"..."`.
+fn find_top_level_assignment_eq(src: &str) -> Option<usize> {
+    let bytes = src.as_bytes();
+    let mut depth = 0i32;
+    let mut in_str = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'"' {
+            in_str = !in_str;
+        } else if !in_str {
+            if b == b'(' {
+                depth += 1;
+            } else if b == b')' {
+                depth -= 1;
+            } else if b == b'=' && depth == 0 {
+                return Some(i);
+            }
+        }
+    }
+    None
 }
 
 fn split_identifier(s: &str) -> (&str, &str) {
@@ -1190,6 +1306,53 @@ mod tests {
         feed_str(&mut sys, "LET A=\"hi\"");
         enter(&mut sys);
         assert!(sys.vars.get("A").is_none());
+    }
+
+    #[test]
+    fn dim_then_index_assign() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "DIM A(5)");
+        enter(&mut sys);
+        feed_str(&mut sys, "LET A(1)=10");
+        enter(&mut sys);
+        feed_str(&mut sys, "LET A(5)=50");
+        enter(&mut sys);
+        feed_str(&mut sys, "LET B=A(1)+A(5)");
+        enter(&mut sys);
+        assert_eq!(num(&sys, "B"), Some(60.0));
+    }
+
+    #[test]
+    fn array_out_of_range_errors() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "DIM A(3)");
+        enter(&mut sys);
+        feed_str(&mut sys, "LET A(0)=1");
+        enter(&mut sys);
+        // A unchanged because 0 is out of range (Spectrum is 1-indexed).
+        assert_eq!(sys.arrays.get("A").map(|a| a[0]), Some(0.0));
+    }
+
+    #[test]
+    fn dim_in_program_with_loop() {
+        // Two-loop program: fill A(1..5)=I*I, then sum into S.
+        let mut sys = System::new();
+        feed_str(&mut sys, "10 DIM A(5)");
+        enter(&mut sys);
+        feed_str(&mut sys, "20 LET S=0");
+        enter(&mut sys);
+        feed_str(&mut sys, "30 FOR I=1 TO 5");
+        enter(&mut sys);
+        feed_str(&mut sys, "40 LET A(I)=I*I");
+        enter(&mut sys);
+        feed_str(&mut sys, "50 LET S=S+A(I)");
+        enter(&mut sys);
+        feed_str(&mut sys, "60 NEXT I");
+        enter(&mut sys);
+        feed_str(&mut sys, "RUN");
+        enter(&mut sys);
+        // 1+4+9+16+25 = 55
+        assert_eq!(num(&sys, "S"), Some(55.0));
     }
 
     #[test]

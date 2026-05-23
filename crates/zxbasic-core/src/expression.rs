@@ -42,6 +42,14 @@ pub trait Env {
     fn call_user_fn(&self, _name: &str, _arg: Value) -> Option<Value> {
         None
     }
+
+    /// Look up an array element. Indices arrive as evaluated values (the
+    /// parser does the indexing arithmetic). Returns `None` when the array
+    /// is undefined; the parser then raises `UnknownVariable`. Spectrum
+    /// arrays are 1-indexed and the host is responsible for bounds checks.
+    fn get_array(&self, _name: &str, _indices: &[f64]) -> Option<Value> {
+        None
+    }
 }
 
 /// An [`Env`] with no variables and no functions.
@@ -301,9 +309,38 @@ impl<'a, 'e> Parser<'a, 'e> {
                         .call_fn(&name, &[arg])
                         .ok_or(EvalError::UnknownFunction(name))
                 } else {
-                    self.env
-                        .get_var(&name)
-                        .ok_or(EvalError::UnknownVariable(name))
+                    // Possible array access: NAME(idx1, idx2, ...). We only
+                    // commit to it if the next char is `(`; otherwise treat
+                    // it as a plain variable lookup.
+                    self.skip_ws();
+                    if self.peek() == Some('(') {
+                        self.bump();
+                        let mut indices = Vec::new();
+                        // Parse a non-empty comma-separated list of numeric
+                        // indices.
+                        loop {
+                            let v = self.expr()?.as_num()?;
+                            indices.push(v);
+                            self.skip_ws();
+                            match self.peek() {
+                                Some(',') => {
+                                    self.bump();
+                                }
+                                Some(')') => {
+                                    self.bump();
+                                    break;
+                                }
+                                _ => return Err(EvalError::MissingCloseParen),
+                            }
+                        }
+                        self.env
+                            .get_array(&name, &indices)
+                            .ok_or(EvalError::UnknownVariable(name))
+                    } else {
+                        self.env
+                            .get_var(&name)
+                            .ok_or(EvalError::UnknownVariable(name))
+                    }
                 }
             }
             _ => self.primary(),

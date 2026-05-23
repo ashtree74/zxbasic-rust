@@ -10,6 +10,7 @@ pub mod expression;
 pub mod fp_format;
 pub mod program;
 pub mod system;
+pub mod value;
 
 pub use display::{ATTR_H, FRAME_RGBA_LEN, PIXEL_H, PIXEL_W};
 pub use system::System;

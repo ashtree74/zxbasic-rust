@@ -1,7 +1,8 @@
 //! Single-owner state machine for the whole runtime.
 //!
-//! MVP-3a additions on top of MVP-2: built-in functions (`SIN`, `COS`, ...
-//! `PI`, `RND`), comparison operators in expressions, and `IF cond THEN stmt`.
+//! MVP-3b additions on top of MVP-3a: string values and string-typed
+//! identifiers (`A$`, `MSG$`), polymorphic `+` for concatenation, and the
+//! string built-ins (`LEN`, `CODE`, `CHR$`, `STR$`, `VAL`).
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -10,37 +11,27 @@ use crate::display::{Display, CHAR_H, CHAR_W, FRAME_RGBA_LEN};
 use crate::expression::{self, Env};
 use crate::fp_format;
 use crate::program::Program;
+use crate::value::{is_string_name, Value};
 
 /// Logical key fed into [`System::feed_key`].
 #[derive(Debug, Clone, Copy)]
 pub enum Key {
-    /// Ordinary printable ASCII character (32..=126 typically).
     Char(u8),
-    /// CR / Enter.
     Enter,
-    /// Backspace / Delete.
     Backspace,
 }
 
-/// Hard limit on RUN steps. Prevents an unattended infinite loop from hanging
-/// the browser. When hit, prints "B Integer out of range" — wrong text in
-/// Spectrum terms but a fair stand-in until we have BREAK key handling.
 const RUN_STEP_LIMIT: usize = 100_000;
 
-/// Top-level runtime state.
 pub struct System {
     display: Display,
     input_line: String,
-    vars: HashMap<String, f64>,
+    vars: HashMap<String, Value>,
     program: Program,
-    /// PRNG state, used by `RND`. Initial seed is a fixed constant so the
-    /// boot-time sequence is reproducible; `RANDOMIZE n` will override.
-    /// Cell because RND is read via `Env::call_fn(&self, ...)`.
     prng: Cell<u64>,
 }
 
 impl System {
-    /// New system with the boot screen pre-painted and an empty input line.
     pub fn new() -> Self {
         let mut display = Display::new();
         paint_boot_screen(&mut display);
@@ -55,18 +46,14 @@ impl System {
         sys
     }
 
-    /// Length of the RGBA buffer that [`Self::render_into`] expects.
     pub const FRAME_RGBA_LEN: usize = FRAME_RGBA_LEN;
 
-    /// Render the current screen state into an RGBA byte buffer.
     pub fn render_into(&self, out: &mut [u8]) {
         self.display.render_into(out);
     }
 
-    /// Advance one frame. MVP-2: no-op.
     pub fn frame(&mut self) {}
 
-    /// Feed a single keystroke from the host.
     pub fn feed_key(&mut self, key: Key) {
         match key {
             Key::Char(b) if (32..=126).contains(&b) => {
@@ -91,9 +78,6 @@ impl System {
         self.display.print_input(&self.input_line, cursor_col);
     }
 
-    /// Top-level dispatch for an entered line:
-    ///   * starts with a digit → store/delete a numbered program line;
-    ///   * otherwise → execute as an immediate statement.
     fn dispatch_input(&mut self, line: &str) {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -105,7 +89,6 @@ impl System {
             match self.execute_statement(trimmed) {
                 StepResult::Ok | StepResult::Stop => {}
                 StepResult::Goto(_) => {
-                    // GOTO outside of RUN is meaningless in our model.
                     self.println_error("Nonsense in BASIC");
                 }
                 StepResult::Error(msg) => self.println_error(&msg),
@@ -114,24 +97,18 @@ impl System {
     }
 
     fn store_program_line(&mut self, line: &str) {
-        // Pull the leading integer.
         let (num_str, rest) = split_leading_number(line);
         let Ok(n) = num_str.parse::<u16>() else {
             self.println_error("Nonsense in BASIC");
             return;
         };
         let body = rest.trim_start().to_string();
-        // Echo the stored line into the print area so the user can see their
-        // program being built up, like on a real Spectrum. Deletions (empty
-        // body) don't echo.
         if !body.is_empty() {
             self.display.println(&format!("{} {}", n, body));
         }
         self.program.upsert(n, body);
     }
 
-    /// Execute a single statement (e.g. one line of a program, or one
-    /// immediate-mode entry). Statement chaining via `:` lands in MVP-3.
     fn execute_statement(&mut self, stmt: &str) -> StepResult {
         let stmt = stmt.trim();
         let (head, rest) = split_first_word(stmt);
@@ -158,8 +135,6 @@ impl System {
     }
 
     fn cmd_print(&mut self, args: &str) -> StepResult {
-        // MVP-2: a single numeric expression. PRINT with no args prints a
-        // blank line.
         if args.trim().is_empty() {
             self.display.println("");
             return StepResult::Ok;
@@ -167,8 +142,7 @@ impl System {
         let env = SysEnv { vars: &self.vars, prng: &self.prng };
         match expression::evaluate_with(args, &env) {
             Ok(v) => {
-                let s = fp_format::format(v);
-                self.display.println(&s);
+                self.display.println(&format_value(&v));
                 StepResult::Ok
             }
             Err(_) => StepResult::Error("Nonsense in BASIC".to_string()),
@@ -176,17 +150,25 @@ impl System {
     }
 
     fn cmd_let(&mut self, args: &str) -> StepResult {
-        // <name> = <expr>
         let Some((lhs, rhs)) = args.split_once('=') else {
             return StepResult::Error("Nonsense in BASIC".to_string());
         };
-        let name = lhs.trim().to_ascii_uppercase();
+        let name = normalise_var_name(lhs.trim());
         if name.is_empty() || !is_valid_var_name(&name) {
             return StepResult::Error("Nonsense in BASIC".to_string());
         }
         let env = SysEnv { vars: &self.vars, prng: &self.prng };
         match expression::evaluate_with(rhs, &env) {
             Ok(v) => {
+                // Spectrum type rule: a string variable (name ends with `$`)
+                // accepts only strings, and a numeric variable only numbers.
+                let typed_ok = match (&v, is_string_name(&name)) {
+                    (Value::Str(_), true) | (Value::Num(_), false) => true,
+                    _ => false,
+                };
+                if !typed_ok {
+                    return StepResult::Error("Nonsense in BASIC".to_string());
+                }
                 self.vars.insert(name, v);
                 StepResult::Ok
             }
@@ -196,8 +178,12 @@ impl System {
 
     fn cmd_goto(&mut self, args: &str) -> StepResult {
         let env = SysEnv { vars: &self.vars, prng: &self.prng };
-        let Ok(v) = expression::evaluate_with(args, &env) else {
-            return StepResult::Error("Nonsense in BASIC".to_string());
+        let v = match expression::evaluate_with(args, &env) {
+            Ok(v) => match v.as_num() {
+                Ok(n) => n,
+                Err(_) => return StepResult::Error("Nonsense in BASIC".to_string()),
+            },
+            Err(_) => return StepResult::Error("Nonsense in BASIC".to_string()),
         };
         if !(0.0..=65535.0).contains(&v) {
             return StepResult::Error("Integer out of range".to_string());
@@ -206,8 +192,6 @@ impl System {
     }
 
     fn cmd_list(&mut self) -> StepResult {
-        // Collect first so we don't hold a borrow on self.program while
-        // mutating self.display.
         let snapshot: Vec<(u16, String)> = self
             .program
             .iter()
@@ -221,14 +205,12 @@ impl System {
     }
 
     fn cmd_run(&mut self, args: &str) -> StepResult {
-        // RUN clears variables and starts at the first line, or at the
-        // argument if given.
         self.vars.clear();
         let start = if args.trim().is_empty() {
             0u16
         } else {
             let env = SysEnv { vars: &self.vars, prng: &self.prng };
-            match expression::evaluate_with(args, &env) {
+            match expression::evaluate_with(args, &env).and_then(|v| v.as_num()) {
                 Ok(v) if (0.0..=65535.0).contains(&v) => v as u16,
                 _ => return StepResult::Error("Nonsense in BASIC".to_string()),
             }
@@ -264,7 +246,6 @@ impl System {
     }
 
     fn cmd_if(&mut self, args: &str) -> StepResult {
-        // IF <cond> THEN <stmt>
         let parsed = {
             let env = SysEnv {
                 vars: &self.vars,
@@ -274,7 +255,11 @@ impl System {
         };
         match parsed {
             Ok((cond, rest)) => {
-                if cond != 0.0 {
+                let truthy = match cond.as_num() {
+                    Ok(n) => n != 0.0,
+                    Err(_) => return StepResult::Error("Nonsense in BASIC".to_string()),
+                };
+                if truthy {
                     let rest_owned = rest.trim().to_string();
                     if rest_owned.is_empty() {
                         return StepResult::Error("Nonsense in BASIC".to_string());
@@ -299,7 +284,6 @@ impl Default for System {
     }
 }
 
-/// Result of executing one statement.
 enum StepResult {
     Ok,
     Stop,
@@ -310,35 +294,53 @@ enum StepResult {
 /// Read-only view of System's variables and PRNG, exposing them to the
 /// expression evaluator as an [`Env`].
 struct SysEnv<'a> {
-    vars: &'a HashMap<String, f64>,
+    vars: &'a HashMap<String, Value>,
     prng: &'a Cell<u64>,
 }
 impl<'a> Env for SysEnv<'a> {
-    fn get_var(&self, name: &str) -> Option<f64> {
-        self.vars.get(name).copied()
+    fn get_var(&self, name: &str) -> Option<Value> {
+        self.vars.get(name).cloned()
     }
-    fn call_fn(&self, name: &str, args: &[f64]) -> Option<f64> {
-        match (name, args) {
-            ("PI", []) => Some(core::f64::consts::PI),
-            ("RND", []) => Some(rnd_next(self.prng)),
-            ("SIN", [x]) => Some(x.sin()),
-            ("COS", [x]) => Some(x.cos()),
-            ("TAN", [x]) => Some(x.tan()),
-            ("ASN", [x]) => Some(x.asin()),
-            ("ACS", [x]) => Some(x.acos()),
-            ("ATN", [x]) => Some(x.atan()),
-            ("LN", [x]) => Some(x.ln()),
-            ("EXP", [x]) => Some(x.exp()),
-            ("INT", [x]) => Some(x.floor()), // Spectrum INT truncates toward -inf
-            ("ABS", [x]) => Some(x.abs()),
-            ("SQR", [x]) => Some(x.sqrt()),
-            ("SGN", [x]) => Some(if *x > 0.0 { 1.0 } else if *x < 0.0 { -1.0 } else { 0.0 }),
-            _ => None,
-        }
+    fn call_fn(&self, name: &str, args: &[Value]) -> Option<Value> {
+        Some(match (name, args) {
+            ("PI", []) => Value::Num(core::f64::consts::PI),
+            ("RND", []) => Value::Num(rnd_next(self.prng)),
+            ("SIN", [Value::Num(x)]) => Value::Num(x.sin()),
+            ("COS", [Value::Num(x)]) => Value::Num(x.cos()),
+            ("TAN", [Value::Num(x)]) => Value::Num(x.tan()),
+            ("ASN", [Value::Num(x)]) => Value::Num(x.asin()),
+            ("ACS", [Value::Num(x)]) => Value::Num(x.acos()),
+            ("ATN", [Value::Num(x)]) => Value::Num(x.atan()),
+            ("LN", [Value::Num(x)]) => Value::Num(x.ln()),
+            ("EXP", [Value::Num(x)]) => Value::Num(x.exp()),
+            ("INT", [Value::Num(x)]) => Value::Num(x.floor()),
+            ("ABS", [Value::Num(x)]) => Value::Num(x.abs()),
+            ("SQR", [Value::Num(x)]) => Value::Num(x.sqrt()),
+            ("SGN", [Value::Num(x)]) => Value::Num(if *x > 0.0 {
+                1.0
+            } else if *x < 0.0 {
+                -1.0
+            } else {
+                0.0
+            }),
+            ("LEN", [Value::Str(s)]) => Value::Num(s.len() as f64),
+            ("CODE", [Value::Str(s)]) => Value::Num(s.first().copied().unwrap_or(0) as f64),
+            ("CHR$", [Value::Num(n)]) => {
+                let b = (*n as i64).rem_euclid(256) as u8;
+                Value::Str(vec![b])
+            }
+            ("STR$", [Value::Num(n)]) => Value::Str(fp_format::format(*n).into_bytes()),
+            ("VAL", [Value::Str(s)]) => {
+                let src = core::str::from_utf8(s).ok()?;
+                // VAL on a user-provided string runs with the same env (so
+                // VAL "A+1" can reference user variables).
+                return expression::evaluate_with(src, self).ok();
+            }
+            _ => return None,
+        })
     }
 }
 
-/// Splitmix64-based PRNG step, returning a uniform `f64` in `[0, 1)`.
 fn rnd_next(state: &Cell<u64>) -> f64 {
     let mut s = state.get();
     s = s.wrapping_add(0x9E3779B97F4A7C15);
@@ -348,6 +350,16 @@ fn rnd_next(state: &Cell<u64>) -> f64 {
     z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
     z ^= z >> 31;
     ((z >> 11) as f64) / ((1u64 << 53) as f64)
+}
+
+/// Format a `Value` the way `PRINT` would: numbers via `fp_format`, strings
+/// rendered as their bytes (with non-ASCII bytes shown as their UTF-8 source
+/// — string identity round-trips for ASCII-only programs).
+fn format_value(v: &Value) -> String {
+    match v {
+        Value::Num(n) => fp_format::format(*n),
+        Value::Str(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+    }
 }
 
 fn split_leading_number(s: &str) -> (&str, &str) {
@@ -367,13 +379,35 @@ fn split_first_word(s: &str) -> (&str, &str) {
     (&s[..end], s[end..].trim_start())
 }
 
-fn is_valid_var_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() => {}
-        _ => return false,
+fn normalise_var_name(raw: &str) -> String {
+    let mut out = String::new();
+    for c in raw.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_uppercase());
+        } else if c == '$' {
+            out.push('$');
+        } else {
+            return String::new(); // invalid char
+        }
     }
-    chars.all(|c| c.is_ascii_alphanumeric())
+    out
+}
+
+fn is_valid_var_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    if !bytes[0].is_ascii_alphabetic() {
+        return false;
+    }
+    // All but the last char must be alphanumeric. The last may also be `$`.
+    let body_end = if name.ends_with('$') {
+        bytes.len() - 1
+    } else {
+        bytes.len()
+    };
+    bytes[..body_end].iter().all(|b| b.is_ascii_alphanumeric())
 }
 
 fn paint_boot_screen(d: &mut Display) {
@@ -396,6 +430,20 @@ mod tests {
         sys.feed_key(Key::Enter);
     }
 
+    fn num(sys: &System, name: &str) -> Option<f64> {
+        sys.vars.get(name).and_then(|v| match v {
+            Value::Num(n) => Some(*n),
+            _ => None,
+        })
+    }
+
+    fn s(sys: &System, name: &str) -> Option<String> {
+        sys.vars.get(name).and_then(|v| match v {
+            Value::Str(b) => Some(String::from_utf8_lossy(b).into_owned()),
+            _ => None,
+        })
+    }
+
     #[test]
     fn let_then_print() {
         let mut sys = System::new();
@@ -403,7 +451,7 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "PRINT A*2+1");
         enter(&mut sys);
-        assert_eq!(sys.vars.get("A"), Some(&5.0));
+        assert_eq!(num(&sys, "A"), Some(5.0));
     }
 
     #[test]
@@ -428,8 +476,8 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
-        assert_eq!(sys.vars.get("A"), Some(&2.0));
-        assert_eq!(sys.vars.get("B"), Some(&3.0));
+        assert_eq!(num(&sys, "A"), Some(2.0));
+        assert_eq!(num(&sys, "B"), Some(3.0));
     }
 
     #[test]
@@ -445,7 +493,7 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
-        assert_eq!(sys.vars.get("I"), Some(&1.0));
+        assert_eq!(num(&sys, "I"), Some(1.0));
     }
 
     #[test]
@@ -459,9 +507,7 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
-        // I should have advanced approximately RUN_STEP_LIMIT / 2 times
-        // (each iteration is 2 statements: LET, GOTO).
-        let i = *sys.vars.get("I").unwrap();
+        let i = num(&sys, "I").unwrap();
         assert!(i > 10_000.0, "expected many iterations, got {}", i);
     }
 
@@ -489,7 +535,7 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
-        assert_eq!(sys.vars.get("B"), Some(&99.0));
+        assert_eq!(num(&sys, "B"), Some(99.0));
     }
 
     #[test]
@@ -497,13 +543,13 @@ mod tests {
         let mut sys = System::new();
         feed_str(&mut sys, "LET A=INT 3.7");
         enter(&mut sys);
-        assert_eq!(sys.vars.get("A"), Some(&3.0));
+        assert_eq!(num(&sys, "A"), Some(3.0));
         feed_str(&mut sys, "LET B=ABS -5");
         enter(&mut sys);
-        assert_eq!(sys.vars.get("B"), Some(&5.0));
+        assert_eq!(num(&sys, "B"), Some(5.0));
         feed_str(&mut sys, "LET C=SQR 16");
         enter(&mut sys);
-        assert_eq!(sys.vars.get("C"), Some(&4.0));
+        assert_eq!(num(&sys, "C"), Some(4.0));
     }
 
     #[test]
@@ -512,7 +558,7 @@ mod tests {
         for _ in 0..50 {
             feed_str(&mut sys, "LET R=RND");
             enter(&mut sys);
-            let r = *sys.vars.get("R").unwrap();
+            let r = num(&sys, "R").unwrap();
             assert!((0.0..1.0).contains(&r), "RND out of range: {}", r);
         }
     }
@@ -525,5 +571,47 @@ mod tests {
         feed_str(&mut sys, "10");
         enter(&mut sys);
         assert!(sys.program.is_empty());
+    }
+
+    #[test]
+    fn string_variable_and_concat() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "LET A$=\"hello\"");
+        enter(&mut sys);
+        feed_str(&mut sys, "LET B$=A$+\" world\"");
+        enter(&mut sys);
+        assert_eq!(s(&sys, "A$").as_deref(), Some("hello"));
+        assert_eq!(s(&sys, "B$").as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn type_mismatched_let_rejected() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "LET A$=5");
+        enter(&mut sys);
+        assert!(sys.vars.get("A$").is_none());
+        feed_str(&mut sys, "LET A=\"hi\"");
+        enter(&mut sys);
+        assert!(sys.vars.get("A").is_none());
+    }
+
+    #[test]
+    fn string_builtins() {
+        let mut sys = System::new();
+        feed_str(&mut sys, "LET A=LEN \"hello\"");
+        enter(&mut sys);
+        assert_eq!(num(&sys, "A"), Some(5.0));
+        feed_str(&mut sys, "LET A=CODE \"A\"");
+        enter(&mut sys);
+        assert_eq!(num(&sys, "A"), Some(65.0));
+        feed_str(&mut sys, "LET S$=CHR$ 65");
+        enter(&mut sys);
+        assert_eq!(s(&sys, "S$").as_deref(), Some("A"));
+        feed_str(&mut sys, "LET S$=STR$ 42");
+        enter(&mut sys);
+        assert_eq!(s(&sys, "S$").as_deref(), Some("42"));
+        feed_str(&mut sys, "LET A=VAL \"1+2*3\"");
+        enter(&mut sys);
+        assert_eq!(num(&sys, "A"), Some(7.0));
     }
 }

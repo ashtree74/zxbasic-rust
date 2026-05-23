@@ -1,4 +1,4 @@
-//! Numeric expression parser + evaluator.
+//! Expression parser + evaluator producing [`Value`] (numeric or string).
 //!
 //! Grammar (precedence low to high):
 //!
@@ -11,25 +11,30 @@
 //! unary    = '-' unary | '+' unary | call_or_primary
 //! call_or_primary = func_call | primary
 //! func_call = FUNC_NAME unary?                // 0- or 1-arg, Spectrum-style
-//! primary  = number | identifier | '(' expr ')'
+//! primary  = number | string_literal | identifier | '(' expr ')'
 //! number   = digit+ ('.' digit+)? ([eE] [+-]? digit+)?
-//! identifier = [A-Za-z] [A-Za-z0-9]*
+//! string_literal = '"' (any-byte-except-")* '"'
+//! identifier = [A-Za-z] [A-Za-z0-9]* '$'?
 //! ```
 //!
-//! Function calls follow Spectrum syntax: `SIN x` (no parens) or `SIN(x)`
-//! (parens belong to the inner expression). Comparisons return 1.0 if true,
-//! 0.0 if false — matching Spectrum's "false=0, true=1" numeric booleans.
+//! Type rules:
+//!   * `+` works on `num + num` (add) or `str + str` (concat). Mixed → error.
+//!   * `-`, `*`, `/`, `^` are numeric only.
+//!   * Comparisons require the same type on both sides; strings compare
+//!     lexicographically.
+//!   * Identifiers ending in `$` are string-typed; others are numeric.
 
 use core::iter::Peekable;
 use core::str::Chars;
 
-/// Variable lookup and function dispatch. Identifiers and function names are
-/// passed in Spectrum-style uppercase.
+use crate::value::Value;
+
+/// Variable lookup and function dispatch.
 pub trait Env {
-    fn get_var(&self, name: &str) -> Option<f64>;
+    fn get_var(&self, name: &str) -> Option<Value>;
 
     /// Call a built-in function. Default: no functions known.
-    fn call_fn(&self, _name: &str, _args: &[f64]) -> Option<f64> {
+    fn call_fn(&self, _name: &str, _args: &[Value]) -> Option<Value> {
         None
     }
 }
@@ -37,33 +42,37 @@ pub trait Env {
 /// An [`Env`] with no variables and no functions.
 pub struct EmptyEnv;
 impl Env for EmptyEnv {
-    fn get_var(&self, _: &str) -> Option<f64> {
+    fn get_var(&self, _: &str) -> Option<Value> {
         None
     }
 }
 
-/// Built-in functions recognised at parse time. Listed centrally so both the
-/// parser (to decide identifier-vs-call) and a host [`Env`] can stay in sync.
-pub const FUNCS_0ARG: &[&str] = &["RND", "PI"];
-pub const FUNCS_1ARG: &[&str] = &[
+/// Built-in numeric functions recognised at parse time (single argument).
+pub const FUNCS_1ARG_NUM: &[&str] = &[
     "SIN", "COS", "TAN", "ASN", "ACS", "ATN", "LN", "EXP", "INT", "ABS", "SQR", "SGN",
+    "LEN", "CODE", "VAL",
 ];
+/// Built-in string-returning functions (single argument). Their names carry
+/// the `$` suffix.
+pub const FUNCS_1ARG_STR: &[&str] = &["CHR$", "STR$"];
+/// Built-in 0-arg functions.
+pub const FUNCS_0ARG: &[&str] = &["RND", "PI"];
 
 fn is_func_0arg(name: &str) -> bool {
     FUNCS_0ARG.contains(&name)
 }
 fn is_func_1arg(name: &str) -> bool {
-    FUNCS_1ARG.contains(&name)
+    FUNCS_1ARG_NUM.contains(&name) || FUNCS_1ARG_STR.contains(&name)
 }
 
-/// Parse and evaluate `src` as a numeric expression with no variables.
-pub fn evaluate(src: &str) -> Result<f64, EvalError> {
+/// Parse and evaluate `src` as an expression with no variables.
+pub fn evaluate(src: &str) -> Result<Value, EvalError> {
     evaluate_with(src, &EmptyEnv)
 }
 
 /// Parse and evaluate `src` with variable lookups and function dispatch
 /// against `env`.
-pub fn evaluate_with(src: &str, env: &dyn Env) -> Result<f64, EvalError> {
+pub fn evaluate_with(src: &str, env: &dyn Env) -> Result<Value, EvalError> {
     let mut p = Parser::new(src, env);
     let v = p.expr()?;
     p.skip_ws();
@@ -73,29 +82,37 @@ pub fn evaluate_with(src: &str, env: &dyn Env) -> Result<f64, EvalError> {
     Ok(v)
 }
 
+/// Convenience: parse `src` and require it to be numeric.
+pub fn evaluate_num_with(src: &str, env: &dyn Env) -> Result<f64, EvalError> {
+    evaluate_with(src, env)?.as_num()
+}
+
 /// Parse `src` up to the first occurrence of `stop_at` (case-insensitive
-/// whole word). Returns the value and the byte offset of `stop_at`. Used by
-/// `IF expr THEN stmt` so the caller can resume parsing `stmt`.
+/// whole word). Returns the evaluated value and the byte offset of `stop_at`.
+/// Used by `IF expr THEN stmt` and `FOR I = a TO b STEP s`.
 pub fn evaluate_until_keyword<'a>(
     src: &'a str,
     stop_at: &str,
     env: &dyn Env,
-) -> Result<(f64, &'a str), EvalError> {
+) -> Result<(Value, &'a str), EvalError> {
     let upper = src.to_ascii_uppercase();
     let kw = stop_at.to_ascii_uppercase();
-    // Find " THEN" (with leading whitespace) as a whole word.
     let mut search_from = 0;
     let pos = loop {
         let Some(rel) = upper[search_from..].find(&kw) else {
             return Err(EvalError::Nonsense);
         };
         let abs = search_from + rel;
-        let before_ok = abs == 0
-            || !src.as_bytes()[abs - 1].is_ascii_alphanumeric();
+        let before_ok = abs == 0 || !src.as_bytes()[abs - 1].is_ascii_alphanumeric();
         let after_idx = abs + kw.len();
-        let after_ok = after_idx >= src.len()
-            || !src.as_bytes()[after_idx].is_ascii_alphanumeric();
+        let after_ok =
+            after_idx >= src.len() || !src.as_bytes()[after_idx].is_ascii_alphanumeric();
         if before_ok && after_ok {
+            // Don't match if this position is inside a string literal.
+            if inside_string_literal(src, abs) {
+                search_from = abs + 1;
+                continue;
+            }
             break abs;
         }
         search_from = abs + 1;
@@ -106,20 +123,31 @@ pub fn evaluate_until_keyword<'a>(
     Ok((v, rest))
 }
 
+/// Best-effort check: is `pos` inside a `"..."` literal in `src`? Scans
+/// forward counting unescaped quotes.
+fn inside_string_literal(src: &str, pos: usize) -> bool {
+    let mut in_str = false;
+    for (i, &b) in src.as_bytes().iter().enumerate() {
+        if i >= pos {
+            return in_str;
+        }
+        if b == b'"' {
+            in_str = !in_str;
+        }
+    }
+    in_str
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum EvalError {
-    /// Generic "didn't parse" — Spectrum reports this as "Nonsense in BASIC".
     Nonsense,
-    /// Extra characters after the expression.
     TrailingInput,
-    /// Unbalanced parens / missing closer.
     MissingCloseParen,
-    /// Number literal we couldn't parse as f64.
     BadNumber,
-    /// Reference to a name that the environment doesn't know.
     UnknownVariable(String),
-    /// Call to a function the environment doesn't implement.
     UnknownFunction(String),
+    TypeMismatch,
+    UnterminatedString,
 }
 
 struct Parser<'a, 'e> {
@@ -156,11 +184,11 @@ impl<'a, 'e> Parser<'a, 'e> {
         }
     }
 
-    fn expr(&mut self) -> Result<f64, EvalError> {
+    fn expr(&mut self) -> Result<Value, EvalError> {
         self.relation()
     }
 
-    fn relation(&mut self) -> Result<f64, EvalError> {
+    fn relation(&mut self) -> Result<Value, EvalError> {
         let lhs = self.additive()?;
         self.skip_ws();
         let op = match (self.peek(), self.peek_after(1)) {
@@ -177,33 +205,27 @@ impl<'a, 'e> Parser<'a, 'e> {
             self.bump();
         }
         let rhs = self.additive()?;
-        Ok(match op {
-            "=" => bool_to_num(lhs == rhs),
-            "<>" => bool_to_num(lhs != rhs),
-            "<" => bool_to_num(lhs < rhs),
-            ">" => bool_to_num(lhs > rhs),
-            "<=" => bool_to_num(lhs <= rhs),
-            ">=" => bool_to_num(lhs >= rhs),
-            _ => unreachable!(),
-        })
+        compare(&lhs, &rhs, op)
     }
 
     fn peek_after(&mut self, skip: usize) -> Option<char> {
         self.chars.clone().nth(skip)
     }
 
-    fn additive(&mut self) -> Result<f64, EvalError> {
+    fn additive(&mut self) -> Result<Value, EvalError> {
         let mut lhs = self.term()?;
         loop {
             self.skip_ws();
             match self.peek() {
                 Some('+') => {
                     self.bump();
-                    lhs += self.term()?;
+                    let rhs = self.term()?;
+                    lhs = add(lhs, rhs)?;
                 }
                 Some('-') => {
                     self.bump();
-                    lhs -= self.term()?;
+                    let rhs = self.term()?.as_num()?;
+                    lhs = Value::Num(lhs.as_num()? - rhs);
                 }
                 _ => break,
             }
@@ -211,18 +233,20 @@ impl<'a, 'e> Parser<'a, 'e> {
         Ok(lhs)
     }
 
-    fn term(&mut self) -> Result<f64, EvalError> {
+    fn term(&mut self) -> Result<Value, EvalError> {
         let mut lhs = self.power()?;
         loop {
             self.skip_ws();
             match self.peek() {
                 Some('*') => {
                     self.bump();
-                    lhs *= self.power()?;
+                    let rhs = self.power()?.as_num()?;
+                    lhs = Value::Num(lhs.as_num()? * rhs);
                 }
                 Some('/') => {
                     self.bump();
-                    lhs /= self.power()?;
+                    let rhs = self.power()?.as_num()?;
+                    lhs = Value::Num(lhs.as_num()? / rhs);
                 }
                 _ => break,
             }
@@ -230,23 +254,23 @@ impl<'a, 'e> Parser<'a, 'e> {
         Ok(lhs)
     }
 
-    fn power(&mut self) -> Result<f64, EvalError> {
+    fn power(&mut self) -> Result<Value, EvalError> {
         let base = self.unary()?;
         self.skip_ws();
         if self.peek() == Some('^') {
             self.bump();
-            let exp = self.power()?; // right-associative
-            Ok(base.powf(exp))
+            let exp = self.power()?.as_num()?;
+            Ok(Value::Num(base.as_num()?.powf(exp)))
         } else {
             Ok(base)
         }
     }
 
-    fn unary(&mut self) -> Result<f64, EvalError> {
+    fn unary(&mut self) -> Result<Value, EvalError> {
         self.skip_ws();
         if self.peek() == Some('-') {
             self.bump();
-            Ok(-self.unary()?)
+            Ok(Value::Num(-self.unary()?.as_num()?))
         } else if self.peek() == Some('+') {
             self.bump();
             self.unary()
@@ -255,7 +279,7 @@ impl<'a, 'e> Parser<'a, 'e> {
         }
     }
 
-    fn call_or_primary(&mut self) -> Result<f64, EvalError> {
+    fn call_or_primary(&mut self) -> Result<Value, EvalError> {
         self.skip_ws();
         match self.peek() {
             Some(c) if c.is_ascii_alphabetic() => {
@@ -279,7 +303,7 @@ impl<'a, 'e> Parser<'a, 'e> {
         }
     }
 
-    fn primary(&mut self) -> Result<f64, EvalError> {
+    fn primary(&mut self) -> Result<Value, EvalError> {
         self.skip_ws();
         match self.peek() {
             Some('(') => {
@@ -290,7 +314,8 @@ impl<'a, 'e> Parser<'a, 'e> {
                 }
                 Ok(v)
             }
-            Some(c) if c.is_ascii_digit() || c == '.' => self.number(),
+            Some('"') => self.string_literal(),
+            Some(c) if c.is_ascii_digit() || c == '.' => self.number().map(Value::Num),
             _ => Err(EvalError::Nonsense),
         }
     }
@@ -305,7 +330,41 @@ impl<'a, 'e> Parser<'a, 'e> {
                 break;
             }
         }
+        // Optional `$` suffix marks a string-typed name.
+        if self.peek() == Some('$') {
+            self.bump();
+            name.push('$');
+        }
         name
+    }
+
+    fn string_literal(&mut self) -> Result<Value, EvalError> {
+        self.bump(); // opening "
+        let mut bytes = Vec::new();
+        loop {
+            match self.peek() {
+                None => return Err(EvalError::UnterminatedString),
+                Some('"') => {
+                    self.bump();
+                    // Spectrum convention: "" inside a string is a literal ".
+                    if self.peek() == Some('"') {
+                        self.bump();
+                        bytes.push(b'"');
+                        continue;
+                    }
+                    return Ok(Value::Str(bytes));
+                }
+                Some(c) => {
+                    self.bump();
+                    // Push as-is; we treat strings as byte strings, so non-ASCII
+                    // is encoded as its UTF-8 bytes for now (real Spectrum char
+                    // set arrives with full keyboard support in MVP-6).
+                    let mut buf = [0u8; 4];
+                    let s = c.encode_utf8(&mut buf);
+                    bytes.extend_from_slice(s.as_bytes());
+                }
+            }
+        }
     }
 
     fn number(&mut self) -> Result<f64, EvalError> {
@@ -353,8 +412,34 @@ impl<'a, 'e> Parser<'a, 'e> {
     }
 }
 
-fn bool_to_num(b: bool) -> f64 {
-    if b { 1.0 } else { 0.0 }
+fn add(lhs: Value, rhs: Value) -> Result<Value, EvalError> {
+    match (lhs, rhs) {
+        (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a + b)),
+        (Value::Str(mut a), Value::Str(b)) => {
+            a.extend_from_slice(&b);
+            Ok(Value::Str(a))
+        }
+        _ => Err(EvalError::TypeMismatch),
+    }
+}
+
+fn compare(lhs: &Value, rhs: &Value, op: &str) -> Result<Value, EvalError> {
+    let ord = match (lhs, rhs) {
+        (Value::Num(a), Value::Num(b)) => a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal),
+        (Value::Str(a), Value::Str(b)) => a.cmp(b),
+        _ => return Err(EvalError::TypeMismatch),
+    };
+    use core::cmp::Ordering::*;
+    let r = match op {
+        "=" => ord == Equal,
+        "<>" => ord != Equal,
+        "<" => ord == Less,
+        ">" => ord == Greater,
+        "<=" => ord != Greater,
+        ">=" => ord != Less,
+        _ => unreachable!(),
+    };
+    Ok(Value::Num(if r { 1.0 } else { 0.0 }))
 }
 
 #[cfg(test)]
@@ -363,30 +448,38 @@ mod tests {
     use std::collections::HashMap;
 
     struct TestEnv {
-        vars: HashMap<&'static str, f64>,
+        vars: HashMap<&'static str, Value>,
     }
     impl Env for TestEnv {
-        fn get_var(&self, name: &str) -> Option<f64> {
-            self.vars.get(name).copied()
+        fn get_var(&self, name: &str) -> Option<Value> {
+            self.vars.get(name).cloned()
         }
-        fn call_fn(&self, name: &str, args: &[f64]) -> Option<f64> {
-            match name {
-                "PI" => Some(core::f64::consts::PI),
-                "RND" => Some(0.5), // deterministic for tests
-                "SIN" => Some(args[0].sin()),
-                "COS" => Some(args[0].cos()),
-                "ABS" => Some(args[0].abs()),
-                "INT" => Some(args[0].floor()),
-                "SQR" => Some(args[0].sqrt()),
-                "LN" => Some(args[0].ln()),
-                "EXP" => Some(args[0].exp()),
-                "SGN" => Some(args[0].signum()),
-                "TAN" => Some(args[0].tan()),
-                "ASN" => Some(args[0].asin()),
-                "ACS" => Some(args[0].acos()),
-                "ATN" => Some(args[0].atan()),
-                _ => None,
-            }
+        fn call_fn(&self, name: &str, args: &[Value]) -> Option<Value> {
+            Some(match (name, args) {
+                ("PI", []) => Value::Num(core::f64::consts::PI),
+                ("RND", []) => Value::Num(0.5),
+                ("SIN", [Value::Num(x)]) => Value::Num(x.sin()),
+                ("COS", [Value::Num(x)]) => Value::Num(x.cos()),
+                ("ABS", [Value::Num(x)]) => Value::Num(x.abs()),
+                ("INT", [Value::Num(x)]) => Value::Num(x.floor()),
+                ("SQR", [Value::Num(x)]) => Value::Num(x.sqrt()),
+                ("LN", [Value::Num(x)]) => Value::Num(x.ln()),
+                ("EXP", [Value::Num(x)]) => Value::Num(x.exp()),
+                ("SGN", [Value::Num(x)]) => Value::Num(x.signum()),
+                ("TAN", [Value::Num(x)]) => Value::Num(x.tan()),
+                ("ASN", [Value::Num(x)]) => Value::Num(x.asin()),
+                ("ACS", [Value::Num(x)]) => Value::Num(x.acos()),
+                ("ATN", [Value::Num(x)]) => Value::Num(x.atan()),
+                ("LEN", [Value::Str(s)]) => Value::Num(s.len() as f64),
+                ("CODE", [Value::Str(s)]) => Value::Num(s.first().copied().unwrap_or(0) as f64),
+                ("CHR$", [Value::Num(n)]) => Value::Str(vec![*n as u8]),
+                ("STR$", [Value::Num(n)]) => Value::Str(crate::fp_format::format(*n).into_bytes()),
+                ("VAL", [Value::Str(s)]) => {
+                    let src = std::str::from_utf8(s).ok()?;
+                    return evaluate(src).ok();
+                }
+                _ => return None,
+            })
         }
     }
 
@@ -395,8 +488,8 @@ mod tests {
     }
 
     #[track_caller]
-    fn ok(src: &str, want: f64) {
-        let got = evaluate_with(src, &empty_env()).expect(src);
+    fn ok_num(src: &str, want: f64) {
+        let got = evaluate_with(src, &empty_env()).expect(src).as_num().unwrap();
         let close = if want == 0.0 {
             got.abs() < 1e-12
         } else {
@@ -405,122 +498,107 @@ mod tests {
         assert!(close, "evaluate({:?}) = {}, want {}", src, got, want);
     }
 
-    #[test]
-    fn integers() {
-        ok("0", 0.0);
-        ok("7", 7.0);
-        ok("42", 42.0);
+    #[track_caller]
+    fn ok_str(src: &str, want: &str) {
+        let got = evaluate_with(src, &empty_env()).expect(src);
+        let bytes = got.as_str().unwrap();
+        assert_eq!(bytes, want.as_bytes(), "evaluate({:?})", src);
     }
 
     #[test]
-    fn arithmetic_precedence() {
-        ok("1+2*3", 7.0);
-        ok("(1+2)*3", 9.0);
-        ok("10-2-3", 5.0);
-        ok("16/4/2", 2.0);
+    fn numeric_basics() {
+        ok_num("1+2*3", 7.0);
+        ok_num("2^3^2", 512.0);
+        ok_num("-3", -3.0);
+        ok_num("1=1", 1.0);
+        ok_num("3<>3", 0.0);
     }
 
     #[test]
-    fn unary_minus() {
-        ok("-3", -3.0);
-        ok("-3+5", 2.0);
-        ok("- -3", 3.0);
-        ok("4*-3", -12.0);
+    fn string_literal_and_concat() {
+        ok_str("\"hello\"", "hello");
+        ok_str("\"foo\"+\"bar\"", "foobar");
     }
 
     #[test]
-    fn power_right_assoc() {
-        ok("2^3", 8.0);
-        ok("2^3^2", 512.0);
-        ok("(2^3)^2", 64.0);
+    fn string_compare() {
+        ok_num("\"abc\"<\"abd\"", 1.0);
+        ok_num("\"abc\"=\"abc\"", 1.0);
+        ok_num("\"abc\">\"abb\"", 1.0);
     }
 
     #[test]
-    fn comparisons() {
-        ok("1=1", 1.0);
-        ok("1=2", 0.0);
-        ok("1<>2", 1.0);
-        ok("3<5", 1.0);
-        ok("5<5", 0.0);
-        ok("5<=5", 1.0);
-        ok("5>=5", 1.0);
-        ok("6>=5", 1.0);
-        ok("4>5", 0.0);
-    }
-
-    #[test]
-    fn comparisons_have_lowest_precedence() {
-        ok("1+2=3", 1.0);   // (1+2)=3 → 1
-        ok("2*3>5", 1.0);   // (2*3)>5 → 1
-    }
-
-    #[test]
-    fn func_calls_no_parens() {
-        ok("INT 3.7", 3.0);
-        ok("ABS -5", 5.0);
-        ok("SQR 9", 3.0);
-        ok("SIN 0", 0.0);
-        ok("COS 0", 1.0);
-    }
-
-    #[test]
-    fn func_calls_with_parens() {
-        ok("INT(3.7)", 3.0);
-        ok("SIN(0)+COS(0)", 1.0);
-    }
-
-    #[test]
-    fn no_arg_funcs() {
-        ok("PI", core::f64::consts::PI);
-        ok("RND", 0.5);
-    }
-
-    #[test]
-    fn func_eats_unary_argument() {
-        // SIN 3^2 = SIN(3)^2 on Spectrum, since function precedence is
-        // higher than ^. We model that via unary-arg consumption.
-        let want = (3.0f64.sin()).powi(2);
-        ok("SIN 3^2", want);
-        // But SIN(3^2) reads the whole power inside parens.
-        ok("SIN(3^2)", 9.0f64.sin());
-    }
-
-    #[test]
-    fn variables_resolve() {
-        let env = TestEnv {
-            vars: HashMap::from([("A", 5.0), ("B", 10.0)]),
-        };
-        assert_eq!(evaluate_with("A", &env), Ok(5.0));
-        assert_eq!(evaluate_with("A*B+1", &env), Ok(51.0));
-        assert_eq!(evaluate_with("a + b", &env), Ok(15.0));
-    }
-
-    #[test]
-    fn unknown_variable_errors() {
+    fn type_mismatch_on_minus() {
         let env = empty_env();
-        match evaluate_with("X", &env) {
-            Err(EvalError::UnknownVariable(s)) => assert_eq!(s, "X"),
-            other => panic!("want UnknownVariable, got {:?}", other),
+        assert!(matches!(
+            evaluate_with("\"a\"-\"b\"", &env),
+            Err(EvalError::TypeMismatch)
+        ));
+    }
+
+    #[test]
+    fn type_mismatch_on_mixed_add() {
+        let env = empty_env();
+        assert!(matches!(
+            evaluate_with("\"a\"+1", &env),
+            Err(EvalError::TypeMismatch)
+        ));
+    }
+
+    #[test]
+    fn string_funcs() {
+        ok_num("LEN \"hello\"", 5.0);
+        ok_num("CODE \"A\"", 65.0);
+        ok_str("CHR$ 65", "A");
+        ok_str("STR$ 42", "42");
+        ok_num("VAL \"1+2*3\"", 7.0);
+    }
+
+    #[test]
+    fn dollar_identifier() {
+        let env = TestEnv {
+            vars: HashMap::from([("A$", Value::Str(b"hi".to_vec())), ("A", Value::Num(7.0))]),
+        };
+        match evaluate_with("A$", &env).unwrap() {
+            Value::Str(s) => assert_eq!(s, b"hi"),
+            _ => panic!("expected string"),
+        }
+        match evaluate_with("A", &env).unwrap() {
+            Value::Num(n) => assert_eq!(n, 7.0),
+            _ => panic!("expected num"),
         }
     }
 
     #[test]
-    fn evaluate_until_then() {
-        let env = empty_env();
-        let (v, rest) = evaluate_until_keyword("3 > 1 THEN PRINT 5", "THEN", &env).unwrap();
-        assert_eq!(v, 1.0);
-        assert_eq!(rest.trim_start(), "PRINT 5");
+    fn func_calls_legacy() {
+        ok_num("INT 3.7", 3.0);
+        ok_num("SQR 9", 3.0);
+        ok_num("SIN(0)+COS(0)", 1.0);
+        ok_num("PI", core::f64::consts::PI);
+        ok_num("RND", 0.5);
     }
 
     #[test]
-    fn evaluate_until_then_skips_inside_identifier() {
-        // The literal word "WEATHER" contains "THE" — must not match as a
-        // keyword.
-        let env = TestEnv {
-            vars: HashMap::from([("WEATHEN", 1.0)]),
-        };
-        let (v, rest) = evaluate_until_keyword("WEATHEN THEN PRINT 1", "THEN", &env).unwrap();
-        assert_eq!(v, 1.0);
+    fn unterminated_string_errors() {
+        let env = empty_env();
+        assert_eq!(
+            evaluate_with("\"oops", &env),
+            Err(EvalError::UnterminatedString)
+        );
+    }
+
+    #[test]
+    fn evaluate_until_then_skips_quoted_then() {
+        // The word THEN inside a string literal must not be treated as the
+        // separator.
+        let env = empty_env();
+        let (v, rest) = evaluate_until_keyword(
+            "\"if THEN go\" = \"if THEN go\" THEN PRINT 1",
+            "THEN",
+            &env,
+        )
+        .unwrap();
+        assert_eq!(v.as_num().unwrap(), 1.0);
         assert_eq!(rest.trim_start(), "PRINT 1");
     }
 }

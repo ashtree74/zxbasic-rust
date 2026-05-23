@@ -8,7 +8,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 
 use crate::display::{
-    make_attr, Display, CHAR_H, CHAR_W, FRAME_RGBA_LEN,
+    make_attr, Display, CHAR_W, FRAME_RGBA_LEN,
 };
 use crate::expression::{self, Env};
 use crate::fp_format;
@@ -21,9 +21,18 @@ pub enum Key {
     Char(u8),
     Enter,
     Backspace,
+    /// Spectrum BREAK (Caps Shift + Space). We accept it from the host as
+    /// a dedicated key — JS maps Esc to this. Interrupts a running program
+    /// the same way the ROM does (`08_command.asm:378` calls break_key
+    /// after every statement).
+    Break,
 }
 
-const RUN_STEP_LIMIT: usize = 100_000;
+/// How many BASIC statements to execute per host frame. Picked so a tight
+/// loop on a desktop processes ~300k stmts/sec while still yielding to the
+/// browser event loop every 16 ms — Esc can reach us, the canvas keeps
+/// redrawing, and audio scheduled by BEEP fires on time.
+const STATEMENTS_PER_FRAME: usize = 5_000;
 
 pub struct System {
     display: Display,
@@ -74,6 +83,20 @@ pub struct System {
     /// Queue of `BEEP duration, pitch` requests, drained by the host's
     /// audio code. Each entry is `(duration_seconds, frequency_hz)`.
     pending_beeps: Vec<(f32, f32)>,
+    /// Where the next RUN statement should execute. `Some` while a program
+    /// is mid-flight, `None` when execution is idle (immediate mode).
+    pc: Option<u16>,
+    /// Set by the host when the user presses BREAK. Polled each statement
+    /// by the RUN loop; clearing happens once the interrupt is reported.
+    break_requested: bool,
+    /// Number of host frames the RUN loop must wait before executing its
+    /// next statement, because a `BEEP` is currently playing. Decremented
+    /// by `frame()`. Matches Spectrum semantics where `BEEP d, p` blocks
+    /// program execution for `d` seconds.
+    beep_frames_remaining: u32,
+    /// One-shot flag: when set, the host should cancel any sounds that are
+    /// currently playing. Drained by `take_audio_cancel`.
+    audio_cancel_requested: bool,
 }
 
 #[derive(Clone)]
@@ -123,6 +146,10 @@ impl System {
             last_run_line: 0,
             started_typing: false,
             pending_beeps: Vec::new(),
+            pc: None,
+            break_requested: false,
+            beep_frames_remaining: 0,
+            audio_cancel_requested: false,
         };
         sys.redraw_input();
         sys
@@ -145,6 +172,21 @@ impl System {
 
     pub fn frame(&mut self) {
         self.display.frame_advance();
+        if self.beep_frames_remaining > 0 {
+            self.beep_frames_remaining -= 1;
+        }
+        self.tick_run();
+        // Keep the lower screen in sync with the runtime state: hide the
+        // cursor while a program is still going, surface the final report
+        // (or boot copyright) once it parks back at idle.
+        self.redraw_input();
+    }
+
+    /// Whether a program is currently executing (between `RUN` and the
+    /// completion / error / BREAK report). Used by hosts that drive
+    /// execution explicitly (e.g. unit tests).
+    pub fn is_running(&self) -> bool {
+        self.pc.is_some()
     }
 
     pub fn feed_key(&mut self, key: Key) {
@@ -176,11 +218,23 @@ impl System {
                     self.dispatch_input(&line);
                 }
             }
+            Key::Break => {
+                // Latched flag — RUN's per-statement loop notices it on
+                // the next tick. Has no immediate effect outside RUN.
+                self.break_requested = true;
+            }
         }
         self.redraw_input();
     }
 
     fn redraw_input(&mut self) {
+        // A running program (or a BEEP still playing out) owns the lower
+        // screen — no cursor, no edit prompt. The status line stays blank
+        // until tick_run publishes the final report.
+        if self.pc.is_some() || self.beep_frames_remaining > 0 {
+            self.display.print_input("", None);
+            return;
+        }
         // While there's a status message pending (boot copyright or last
         // report) the lower screen shows *only* that — no cursor, no input
         // — matching the Spectrum's one-line-or-the-other behaviour.
@@ -248,16 +302,31 @@ impl System {
             self.status_line.clear();
         } else {
             match self.execute_statement(trimmed) {
-                StepResult::Ok | StepResult::Stop => {
-                    // Immediate command completed successfully → "0 OK, 0:0".
-                    self.set_report(0, "OK", 0, 0);
+                StepResult::Ok => {
+                    if self.pc.is_some() {
+                        // RUN (or any command that armed the program
+                        // counter) has only just kicked the program off.
+                        // tick_run will publish the final "0 OK, …" status
+                        // once the program actually finishes; until then
+                        // keep the status line blank.
+                        self.status_line.clear();
+                    } else {
+                        // Immediate command completed → "0 OK, 0:1" (the
+                        // Spectrum's PPC is 0 in command mode, and SUBPPC
+                        // ends at the statement *after* the one we just
+                        // ran, so it's 1).
+                        self.set_report(0, "OK", 0, 1);
+                    }
+                }
+                StepResult::Stop => {
+                    self.set_report(9, "STOP statement", 0, 1);
                 }
                 StepResult::Goto(_) | StepResult::AwaitInput => {
                     self.pending_input = None;
-                    self.set_report(1, "Nonsense in BASIC", 0, 0);
+                    self.set_report(1, "Nonsense in BASIC", 0, 1);
                 }
                 StepResult::Error(msg) => {
-                    self.set_report(1, &msg, 0, 0);
+                    self.set_report(1, &msg, 0, 1);
                 }
             }
         }
@@ -484,6 +553,12 @@ impl System {
         StepResult::Ok
     }
 
+    /// Drain the audio-cancel flag. `true` means the host should stop any
+    /// currently playing sounds (called by JS after BREAK).
+    pub fn take_audio_cancel(&mut self) -> bool {
+        std::mem::replace(&mut self.audio_cancel_requested, false)
+    }
+
     fn cmd_beep(&mut self, args: &str) -> StepResult {
         // BEEP <duration>, <pitch>
         // pitch is semitones from middle C (C4 = 0). Frequency:
@@ -505,6 +580,11 @@ impl System {
         }
         let freq = 440.0 * 2f64.powf((pitch - 9.0) / 12.0);
         self.pending_beeps.push((dur as f32, freq as f32));
+        // BEEP is blocking on the Spectrum: the next statement only runs
+        // after the tone has finished. Approximate that with a frame-count
+        // gate (rAF ≈ 60 Hz, close enough to Spectrum's 50 Hz interrupt).
+        let frames = (dur * 60.0).ceil() as u32 + 1;
+        self.beep_frames_remaining = self.beep_frames_remaining.saturating_add(frames);
         StepResult::Ok
     }
 
@@ -523,7 +603,15 @@ impl System {
         if !(0..=7).contains(&n) {
             return StepResult::Error("Integer out of range".to_string());
         }
-        self.current_border = n as u8;
+        let n = n as u8;
+        self.current_border = n;
+        // Build bordcr the same way 08_command.asm:1833 does: paper = N,
+        // ink = 7 (white) for dark borders 0..3, ink = 0 (black) for light
+        // borders 4..7. The lower screen and the post-RUN report repaint
+        // in that colour.
+        let paper_bits = n << 3;
+        let bordcr = if n >= 4 { paper_bits } else { paper_bits | 0x07 };
+        self.display.set_lower_attr(bordcr);
         StepResult::Ok
     }
 
@@ -731,32 +819,62 @@ impl System {
                 _ => return StepResult::Error("Nonsense in BASIC".to_string()),
             }
         };
-        let pc = self.program.next_at_or_after(start);
-        self.run_loop(pc);
+        // Don't execute synchronously — just arm the program counter. The
+        // host's frame() drives execution in chunks so the browser event
+        // loop can interleave BREAK keypresses, audio, and rendering.
+        self.pc = self.program.next_at_or_after(start);
+        self.break_requested = false;
         StepResult::Ok
     }
 
     /// Resume a suspended RUN at `from_line` (smallest existing line ≥ this).
     /// Called by `feed_key` after `INPUT` has been satisfied.
     fn resume_run(&mut self, from_line: u16) {
-        let pc = self.program.next_at_or_after(from_line);
-        self.run_loop(pc);
+        self.pc = self.program.next_at_or_after(from_line);
     }
 
-    /// The actual statement-by-statement RUN loop. Reports its own errors
-    /// directly into the display, and yields cleanly when an `INPUT`
-    /// statement parks the system in `pending_input`.
-    fn run_loop(&mut self, mut pc: Option<u16>) {
-        let mut steps = 0usize;
-        while let Some(line_no) = pc {
-            self.last_run_line = line_no;
-            if steps >= RUN_STEP_LIMIT {
-                // Step-limit fallback: Spectrum would call this "D BREAK".
-                self.set_report(13, "BREAK - CONT repeats", line_no, 1);
+    /// Execute up to [`STATEMENTS_PER_FRAME`] BASIC statements. Called once
+    /// per host frame. Honours BREAK after every statement (matching
+    /// `08_command.asm:378` which calls `break_key` per `stmt_ret`).
+    fn tick_run(&mut self) {
+        if self.pc.is_none() {
+            // Clear any stray BREAK request that arrived while idle.
+            self.break_requested = false;
+            return;
+        }
+        // While a BEEP is in flight we still listen for BREAK — it must
+        // interrupt the tone immediately, like Caps+Space on real hardware.
+        if self.beep_frames_remaining > 0 {
+            if self.break_requested {
+                let line_no = self.pc.unwrap_or(0);
+                self.set_report(13, "BREAK into program", line_no, 1);
+                self.pc = None;
                 self.current_line = None;
+                self.break_requested = false;
+                self.pending_beeps.clear();
+                self.beep_frames_remaining = 0;
+                self.audio_cancel_requested = true;
+            }
+            return;
+        }
+        for _ in 0..STATEMENTS_PER_FRAME {
+            let Some(line_no) = self.pc else { return };
+            if self.break_requested {
+                self.set_report(13, "BREAK into program", line_no, 1);
+                self.pc = None;
+                self.current_line = None;
+                self.break_requested = false;
+                self.pending_beeps.clear();
+                self.beep_frames_remaining = 0;
+                self.audio_cancel_requested = true;
                 return;
             }
-            steps += 1;
+            // If the statement we just executed enqueued a BEEP, stop
+            // pulling more statements until the tone has played out.
+            if self.beep_frames_remaining > 0 {
+                return;
+            }
+            self.last_run_line = line_no;
             self.current_line = Some(line_no);
             let stmt = self
                 .program
@@ -765,31 +883,43 @@ impl System {
                 .unwrap_or_default();
             match self.execute_statement(&stmt) {
                 StepResult::Ok => {
-                    pc = self.program.next_at_or_after(line_no.saturating_add(1));
+                    self.pc = self.program.next_at_or_after(line_no.saturating_add(1));
+                    if self.pc.is_none() {
+                        self.set_report(0, "OK", line_no, 1);
+                        self.current_line = None;
+                        return;
+                    }
                 }
                 StepResult::Stop => {
-                    // STOP statement → "9 STOP statement, line:1".
                     self.set_report(9, "STOP statement", line_no, 1);
+                    self.pc = None;
                     self.current_line = None;
                     return;
                 }
                 StepResult::Goto(n) => {
-                    pc = self.program.next_at_or_after(n);
+                    self.pc = self.program.next_at_or_after(n);
+                    if self.pc.is_none() {
+                        self.set_report(0, "OK", line_no, 1);
+                        self.current_line = None;
+                        return;
+                    }
                 }
                 StepResult::AwaitInput => {
+                    // pending_input was set; suspend until the user presses
+                    // Enter to satisfy it. resume_run reopens self.pc.
+                    self.pc = None;
                     self.current_line = None;
                     return;
                 }
                 StepResult::Error(msg) => {
                     self.set_report(1, &msg, line_no, 1);
+                    self.pc = None;
                     self.current_line = None;
                     return;
                 }
             }
         }
-        // Fell off the end of the program cleanly → "0 OK, line:1".
-        self.set_report(0, "OK", self.last_run_line, 1);
-        self.current_line = None;
+        // Budget for this frame exhausted; program continues next tick.
     }
 
     fn cmd_if(&mut self, args: &str) -> StepResult {
@@ -1313,6 +1443,18 @@ mod tests {
     fn enter(sys: &mut System) {
         sys.feed_key(Key::Enter);
     }
+    /// Drive the frame-based RUN loop to completion (or until `max_frames`
+    /// elapses, simulating BREAK after a long wait). Used by every test
+    /// that issues RUN.
+    fn drive(sys: &mut System) {
+        for _ in 0..10_000 {
+            if !sys.is_running() {
+                return;
+            }
+            sys.frame();
+        }
+        panic!("program didn't finish in 10_000 frames");
+    }
 
     fn num(sys: &System, name: &str) -> Option<f64> {
         sys.vars.get(name).and_then(|v| match v {
@@ -1360,6 +1502,7 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
+        drive(&mut sys);
         assert_eq!(num(&sys, "A"), Some(2.0));
         assert_eq!(num(&sys, "B"), Some(3.0));
     }
@@ -1377,11 +1520,16 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
+        drive(&mut sys);
         assert_eq!(num(&sys, "I"), Some(1.0));
     }
 
     #[test]
-    fn step_limit_breaks_infinite_loop() {
+    fn break_interrupts_infinite_loop() {
+        // The Spectrum has no step limit — BREAK is the only way out of a
+        // tight loop. We exercise that: tick a few frames, raise BREAK,
+        // tick one more, expect the loop to stop with a fat counter and
+        // a "BREAK into program" report.
         let mut sys = System::new();
         feed_str(&mut sys, "10 LET I=0");
         enter(&mut sys);
@@ -1391,8 +1539,13 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
+        // Let the loop spin for a couple of frame budgets, then break.
+        for _ in 0..3 { sys.frame(); }
+        sys.feed_key(Key::Break);
+        sys.frame();
+        assert!(!sys.is_running(), "BREAK should have stopped the loop");
         let i = num(&sys, "I").unwrap();
-        assert!(i > 10_000.0, "expected many iterations, got {}", i);
+        assert!(i > 1_000.0, "expected many iterations before BREAK, got {}", i);
     }
 
     #[test]
@@ -1419,6 +1572,7 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
+        drive(&mut sys);
         assert_eq!(num(&sys, "B"), Some(99.0));
     }
 
@@ -1497,6 +1651,7 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
+        drive(&mut sys);
         assert_eq!(num(&sys, "C"), Some(3.0));
     }
 
@@ -1543,6 +1698,7 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
+        drive(&mut sys);
         // 1+4+9+16+25 = 55
         assert_eq!(num(&sys, "S"), Some(55.0));
     }
@@ -1562,6 +1718,7 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
+        drive(&mut sys);
         assert_eq!(num(&sys, "A"), Some(99.0));
     }
 
@@ -1572,6 +1729,7 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
+        drive(&mut sys);
         // No assertion on display, just check we didn't panic.
         // RETURN without GOSUB → error printed, no infinite loop.
         assert!(sys.gosub_stack.is_empty());
@@ -1614,6 +1772,7 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
+        drive(&mut sys);
         // 1+2+3+4+5 = 15
         assert_eq!(num(&sys, "S"), Some(15.0));
         // I is left at 6 after the loop terminates.
@@ -1633,6 +1792,7 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
+        drive(&mut sys);
         // 10+8+6+4+2 = 30
         assert_eq!(num(&sys, "S"), Some(30.0));
     }
@@ -1646,12 +1806,14 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
+        drive(&mut sys);
         // System should now be parked awaiting input.
         assert!(sys.pending_input.is_some(), "expected pending input");
         // User types 7.
         feed_str(&mut sys, "7");
         enter(&mut sys);
-        // RUN resumes; N=7, R=49.
+        // Resume execution after INPUT and finish line 20.
+        drive(&mut sys);
         assert_eq!(num(&sys, "N"), Some(7.0));
         assert_eq!(num(&sys, "R"), Some(49.0));
         assert!(sys.pending_input.is_none());
@@ -1664,8 +1826,10 @@ mod tests {
         enter(&mut sys);
         feed_str(&mut sys, "RUN");
         enter(&mut sys);
+        drive(&mut sys);
         feed_str(&mut sys, "hello world");
         enter(&mut sys);
+        drive(&mut sys);
         assert_eq!(s(&sys, "N$").as_deref(), Some("hello world"));
     }
 

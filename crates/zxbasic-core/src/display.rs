@@ -25,10 +25,14 @@ pub const CHAR_H: usize = PIXEL_H / CELL_H; // 24
 pub const ATTR_W: usize = CHAR_W;
 pub const ATTR_H: usize = CHAR_H;
 
-/// The Spectrum's lower screen sits on row 22 — the same physical line
-/// holds either a status report (boot copyright, `0 OK, X:Y` etc.) or the
-/// active editor line with a K-mode cursor; never both at the same time.
-pub const INPUT_ROW: usize = 22;
+/// First row of the Spectrum lower screen. Always painted in
+/// [`Display::lower_attr`] (the `bordcr` colour pair). On boot and after
+/// each immediate command the row is blank — it only fills when the
+/// editor or INPUT need a second line.
+pub const LOWER_TOP: usize = 22;
+/// The row that hosts the status report or the active editor line —
+/// always the screen's bottom row, matching the Spectrum.
+pub const INPUT_ROW: usize = 23;
 /// Last row of the scrolling upper screen (PRINT output).
 pub const PRINT_BOTTOM: usize = 21;
 
@@ -73,6 +77,12 @@ pub struct Display {
     print_cursor: (usize, usize),
     /// Counts up by 1 per [`Self::frame_advance`] call; bit 4 toggles ink ↔ paper for FLASH cells.
     flash_counter: u32,
+    /// Lower-screen attribute byte. After `BORDER N` the host sets this to
+    /// `(N<<3)` with ink = 7 (white) for dark borders or 0 (black) for
+    /// light ones — matching the ROM's `bordcr` system variable
+    /// (`08_command.asm:1846`). The input row and status report inherit
+    /// this attr.
+    lower_attr: u8,
 }
 
 impl Display {
@@ -82,7 +92,14 @@ impl Display {
             attrs: [DEFAULT_ATTR; ATTR_FILE_LEN],
             print_cursor: (0, 0),
             flash_counter: 0,
+            lower_attr: DEFAULT_ATTR,
         }
+    }
+
+    /// Update the lower-screen attribute byte (Spectrum's `bordcr`). The
+    /// input row and status line repaint with this attr on the next redraw.
+    pub fn set_lower_attr(&mut self, attr: u8) {
+        self.lower_attr = attr;
     }
 
     /// Clear pixels and reset attributes to `default_attr` (ink/paper used
@@ -205,22 +222,28 @@ impl Display {
         }
     }
 
-    /// Redraw the single lower-screen row. The caller chooses whether the
-    /// line shows a status message (boot copyright, `0 OK, …` report) or
-    /// the active editor input with a K-mode cursor — both options share
-    /// the same physical row, never coexisting.
+    /// Redraw both rows of the lower screen using the current lower-screen
+    /// attribute (set by [`Self::set_lower_attr`] in response to `BORDER`).
+    /// Row 22 stays blank (just the attribute fill); row 23 carries either
+    /// the status report or the active editor line plus K-mode cursor.
     pub fn print_input(&mut self, text: &str, cursor_col: Option<usize>) {
-        self.clear_row(INPUT_ROW, DEFAULT_ATTR);
+        let attr = self.lower_attr;
+        // Row 22 — always present, always in the BORDER colour pair.
+        self.clear_row(LOWER_TOP, attr);
+        // Row 23 — the line that carries text.
+        self.clear_row(INPUT_ROW, attr);
         for (i, ch) in text.chars().enumerate() {
             if i >= CHAR_W {
                 break;
             }
-            self.print_at(i, INPUT_ROW, ch, DEFAULT_ATTR);
+            self.print_at(i, INPUT_ROW, ch, attr);
         }
         if let Some(col) = cursor_col {
             if col < CHAR_W {
-                let cursor_attr = make_attr(7, 0, false, true);
-                self.print_at(col, INPUT_ROW, 'K', cursor_attr);
+                // Cursor flashes between normal and inverse of the
+                // lower-screen attribute. Setting the FLASH bit lets the
+                // render pass toggle ink↔paper automatically.
+                self.print_at(col, INPUT_ROW, 'K', attr | 0x80);
             }
         }
     }

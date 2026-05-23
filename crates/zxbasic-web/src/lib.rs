@@ -55,6 +55,12 @@ impl System {
         self.inner.feed_key(Key::Backspace);
     }
 
+    /// Spectrum BREAK (Caps Shift + Space). Hosts that have no chord
+    /// support typically wire it to Esc.
+    pub fn feed_break(&mut self) {
+        self.inner.feed_key(Key::Break);
+    }
+
     /// Current screen-border colour as a packed RGB integer (0xRRGGBB).
     /// JS reads this every frame to keep the border around the canvas in sync.
     pub fn border_rgb_packed(&self) -> u32 {
@@ -73,6 +79,13 @@ impl System {
             out.push(f);
         }
         out.into_boxed_slice()
+    }
+
+    /// `true` if the runtime asked the host to stop currently playing
+    /// audio (typically after BREAK during a BEEP sequence). Single-shot —
+    /// reading it clears the flag.
+    pub fn take_audio_cancel(&mut self) -> bool {
+        self.inner.take_audio_cancel()
     }
 }
 

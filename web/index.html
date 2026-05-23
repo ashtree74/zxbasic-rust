@@ -85,8 +85,10 @@
     }
 
     // BEEP scheduling. Tones queued back-to-back via `nextBeepTime` so a
-    // fast RUN-driven sequence still plays as a melody.
+    // fast RUN-driven sequence still plays as a melody. We also keep
+    // handles to in-flight oscillators so BREAK can cut them off.
     let nextBeepTime = 0;
+    const activeBeeps = [];
     function scheduleBeep(duration, frequency) {
       const ctx = audioReady();
       if (!ctx) return;
@@ -104,8 +106,23 @@
         osc.connect(gain).connect(ctx.destination);
         osc.start(start);
         osc.stop(start + duration);
+        const handle = { osc, gain };
+        activeBeeps.push(handle);
+        osc.onended = () => {
+          const i = activeBeeps.indexOf(handle);
+          if (i >= 0) activeBeeps.splice(i, 1);
+        };
         nextBeepTime = start + duration;
       } catch (err) { console.warn("[zxbasic] beep failed", err); }
+    }
+
+    function cancelAllBeeps() {
+      for (const h of activeBeeps.splice(0)) {
+        try { h.osc.stop(); } catch (_) {}
+        try { h.osc.disconnect(); } catch (_) {}
+        try { h.gain.disconnect(); } catch (_) {}
+      }
+      if (audioCtx) nextBeepTime = audioCtx.currentTime;
     }
 
     function frame() {
@@ -118,6 +135,9 @@
       if (document.body.style.backgroundColor !== css) {
         document.body.style.backgroundColor = css;
       }
+      // If RUN was interrupted by BREAK during a BEEP, cut any tones that
+      // would otherwise keep playing after the program has stopped.
+      if (sys.take_audio_cancel()) cancelAllBeeps();
       // Drain any BEEPs queued by RUN since the last frame and schedule
       // them as a contiguous melody.
       const beeps = sys.take_beeps();
@@ -181,6 +201,13 @@
       // Don't swallow modifier combos like Cmd/Ctrl+V — let the paste event
       // through.
       if (e.metaKey || e.ctrlKey) return;
+      if (e.key === "Escape") {
+        // Spectrum BREAK (Caps Shift + Space). Interrupts RUN immediately,
+        // matching 08_command.asm:1205 (break_key called by stmt_ret).
+        sys.feed_break();
+        e.preventDefault();
+        return;
+      }
       if (e.key === "Enter") {
         keyClick();
         sys.feed_enter();

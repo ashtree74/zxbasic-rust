@@ -58,6 +58,13 @@ pub struct System {
     /// Set while RUN is iterating a line; used by `FOR` to capture the
     /// matching return point for `NEXT`.
     current_line: Option<u16>,
+    /// 0-based index of the colon-separated statement currently executing
+    /// inside `current_line`. Captured by `FOR` so the matching `NEXT`
+    /// can loop back inside the same line.
+    current_stmt: u16,
+    /// When `Some`, the next line fetched by `tick_run` should skip this
+    /// many statements before resuming. Set by `StepResult::Resume`.
+    pc_stmt: u16,
     /// When `Some`, the next Enter binds the input line to `var` and resumes
     /// RUN at `after_line`. While set, the editor renders a `?` prompt.
     pending_input: Option<PendingInput>,
@@ -145,9 +152,14 @@ struct ForFrame {
     var: String,
     end: f64,
     step: f64,
-    /// Line number of the `FOR` statement. `NEXT` resumes execution at the
-    /// first line strictly greater than this.
+    /// Line number of the `FOR` statement. `NEXT` resumes execution
+    /// inside this line at the statement after the FOR — or on the
+    /// next line if the FOR was the last statement on its line.
     return_line: u16,
+    /// 0-based index of the `FOR` statement within its line. NEXT
+    /// resumes at `return_stmt + 1`. Lets inline loops like
+    /// `FOR I=1 TO 5: PRINT I: NEXT I` actually iterate.
+    return_stmt: u16,
 }
 
 struct PendingInput {
@@ -196,6 +208,8 @@ impl System {
             data_buffer: Vec::new(),
             data_pointer: 0,
             border_writes_this_frame: Vec::new(),
+            current_stmt: 0,
+            pc_stmt: 0,
             history: Vec::new(),
             history_pos: None,
             history_draft: String::new(),
@@ -455,7 +469,9 @@ impl System {
                 StepResult::Stop => {
                     self.set_report(9, "STOP statement", 0, 1);
                 }
-                StepResult::Goto(_) | StepResult::AwaitInput => {
+                StepResult::Goto(_)
+                | StepResult::Resume { .. }
+                | StepResult::AwaitInput => {
                     self.pending_input = None;
                     self.set_report(1, "Nonsense in BASIC", 0, 1);
                 }
@@ -483,7 +499,28 @@ impl System {
     /// line. Stops early on Stop / Goto / Error / AwaitInput so those
     /// outcomes propagate to RUN.
     fn execute_statement(&mut self, line: &str) -> StepResult {
+        self.execute_statement_from(line, 0)
+    }
+
+    /// Same as `execute_statement` but skips the first `skip` colon-
+    /// separated statements before running anything. Used by
+    /// `StepResult::Resume` so `NEXT` can loop back inside an inline
+    /// `FOR I=…: <body>: NEXT I`.
+    fn execute_statement_from(&mut self, line: &str, skip: u16) -> StepResult {
         let mut rest = line.trim();
+        // Advance past `skip` statements without executing them.
+        let mut idx: u16 = 0;
+        while idx < skip && !rest.is_empty() {
+            let head_upper = first_word_uppercase(rest);
+            let (_, next) = if head_upper == "IF" || head_upper == "DEF" {
+                (rest, "")
+            } else {
+                split_top_level_colon(rest)
+            };
+            rest = next.trim_start();
+            idx += 1;
+        }
+        self.current_stmt = idx;
         loop {
             if rest.is_empty() {
                 return StepResult::Ok;
@@ -501,6 +538,7 @@ impl System {
                 StepResult::Ok => {}
                 other => return other,
             }
+            self.current_stmt = self.current_stmt.saturating_add(1);
             rest = next.trim_start();
         }
     }
@@ -1341,7 +1379,10 @@ impl System {
                 .get(line_no)
                 .map(str::to_string)
                 .unwrap_or_default();
-            match self.execute_statement(&stmt) {
+            // pc_stmt is set by a prior Resume — consume it here so the
+            // skip happens only once per resume hop.
+            let skip = std::mem::take(&mut self.pc_stmt);
+            match self.execute_statement_from(&stmt, skip) {
                 StepResult::Ok => {
                     self.pc = self.program.next_at_or_after(line_no.saturating_add(1));
                     if self.pc.is_none() {
@@ -1363,6 +1404,10 @@ impl System {
                         self.current_line = None;
                         return;
                     }
+                }
+                StepResult::Resume { line, stmt } => {
+                    self.pc = Some(line);
+                    self.pc_stmt = stmt;
                 }
                 StepResult::AwaitInput => {
                     // pending_input was set; suspend until the user presses
@@ -1445,11 +1490,13 @@ impl System {
         }
         self.vars.insert(var.clone(), Value::Num(start));
         let return_line = self.current_line.unwrap_or(0);
+        let return_stmt = self.current_stmt;
         self.for_stack.push(ForFrame {
             var,
             end,
             step,
             return_line,
+            return_stmt,
         });
         StepResult::Ok
     }
@@ -1464,9 +1511,9 @@ impl System {
         let Some(idx) = idx else {
             return StepResult::Error("NEXT without FOR".to_string());
         };
-        let (var_name, end, step, return_line) = {
+        let (var_name, end, step, return_line, return_stmt) = {
             let f = &self.for_stack[idx];
-            (f.var.clone(), f.end, f.step, f.return_line)
+            (f.var.clone(), f.end, f.step, f.return_line, f.return_stmt)
         };
         let current = match self.vars.get(&var_name) {
             Some(Value::Num(n)) => *n,
@@ -1480,8 +1527,18 @@ impl System {
             self.for_stack.truncate(idx);
             StepResult::Ok
         } else {
-            // Resume on the first line strictly after the FOR.
-            StepResult::Goto(return_line.saturating_add(1))
+            // Resume at the statement *after* the FOR. If the FOR was the
+            // last statement on its line, fall through to the next line.
+            let next_stmt = return_stmt.saturating_add(1);
+            let line_text = self.program.get(return_line).unwrap_or("");
+            if (next_stmt as usize) < count_statements(line_text) {
+                StepResult::Resume {
+                    line: return_line,
+                    stmt: next_stmt,
+                }
+            } else {
+                StepResult::Goto(return_line.saturating_add(1))
+            }
         }
     }
 
@@ -1583,6 +1640,11 @@ enum StepResult {
     Ok,
     Stop,
     Goto(u16),
+    /// Resume execution at `line`, but skip the first `stmt` colon-
+    /// separated statements before running anything. Needed so `NEXT`
+    /// loops back to the body of an inline `FOR I=…: <body>: NEXT I`
+    /// instead of falling through to the next line number.
+    Resume { line: u16, stmt: u16 },
     Error(String),
     /// The statement (only `INPUT` today) parked the RUN loop in
     /// `pending_input`. The loop must return without printing an error.
@@ -1657,6 +1719,25 @@ fn match_print_modifier(src: &str, pos: usize) -> Option<(&'static str, usize)> 
         }
     }
     None
+}
+
+/// Number of colon-separated statements on `line`, with `IF` / `DEF FN`
+/// treated as a single statement that owns everything to end-of-line
+/// (matching `execute_statement_from`'s skip semantics).
+fn count_statements(line: &str) -> usize {
+    let mut rest = line.trim();
+    let mut count = 0usize;
+    while !rest.is_empty() {
+        count += 1;
+        let head_upper = first_word_uppercase(rest);
+        let (_, next) = if head_upper == "IF" || head_upper == "DEF" {
+            (rest, "")
+        } else {
+            split_top_level_colon(rest)
+        };
+        rest = next.trim_start();
+    }
+    count
 }
 
 fn matches_keyword(src: &str, pos: usize, kw: &str) -> bool {
@@ -2230,6 +2311,53 @@ mod tests {
         sys.feed_key(Key::HistoryPrev);
         // Only one entry in history: stay on it.
         assert_eq!(sys.input_line, "LET A=1");
+    }
+
+    #[test]
+    fn inline_for_next_iterates() {
+        // FOR/NEXT on a single line used to only run one iteration —
+        // NEXT was jumping to the next program line. Verify the
+        // intra-line resume now visits every iteration.
+        let mut sys = System::new();
+        feed_str(&mut sys, "10 LET S=0");
+        enter(&mut sys);
+        feed_str(&mut sys, "20 FOR I=1 TO 5: LET S=S+I: NEXT I");
+        enter(&mut sys);
+        feed_str(&mut sys, "RUN");
+        enter(&mut sys);
+        drive(&mut sys);
+        assert_eq!(num(&sys, "S"), Some(15.0));
+        assert_eq!(num(&sys, "I"), Some(6.0));
+    }
+
+    #[test]
+    fn inline_for_next_with_trailing_statement() {
+        // After the inline loop completes, statements *after* NEXT on
+        // the same line must still run — they aren't part of the body.
+        let mut sys = System::new();
+        feed_str(&mut sys, "10 LET S=0: FOR I=1 TO 3: LET S=S+I: NEXT I: LET T=99");
+        enter(&mut sys);
+        feed_str(&mut sys, "RUN");
+        enter(&mut sys);
+        drive(&mut sys);
+        assert_eq!(num(&sys, "S"), Some(6.0));
+        assert_eq!(num(&sys, "T"), Some(99.0));
+    }
+
+    #[test]
+    fn nested_inline_for_next() {
+        // Two inline FOR/NEXT pairs nested on consecutive lines:
+        // outer is single-line, inner spans the body. Pre-fix this
+        // would either short-circuit or hang.
+        let mut sys = System::new();
+        feed_str(&mut sys, "10 LET S=0");
+        enter(&mut sys);
+        feed_str(&mut sys, "20 FOR I=1 TO 3: FOR J=1 TO 2: LET S=S+1: NEXT J: NEXT I");
+        enter(&mut sys);
+        feed_str(&mut sys, "RUN");
+        enter(&mut sys);
+        drive(&mut sys);
+        assert_eq!(num(&sys, "S"), Some(6.0));
     }
 
     #[test]

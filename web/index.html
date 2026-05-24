@@ -171,11 +171,13 @@
     #crt-btn[aria-pressed="false"] {
       opacity: 0.55;
     }
-    /* Effect-strength dialog — visual twin of #info-dialog, with a
-       row-per-effect grid layout for label / slider / current value. */
+    /* Effect-strength dialog — visual twin of #info-dialog. Sectioned
+       layout (Profile / Image / Geometry / Raster / Analog) with a
+       row-per-effect grid for label / control / current value. */
     #crt-dialog {
-      max-width: 460px;
+      max-width: 480px;
       width: calc(100% - 48px);
+      max-height: calc(100vh - 48px);
       padding: 0;
       border: none;
       border-radius: 12px;
@@ -188,16 +190,31 @@
       background: rgba(0, 0, 0, 0.55);
       backdrop-filter: blur(3px);
     }
-    #crt-dialog .info-card { padding: 22px 26px 18px; }
+    #crt-dialog .info-card {
+      padding: 20px 24px 18px;
+      max-height: calc(100vh - 48px);
+      overflow-y: auto;
+      box-sizing: border-box;
+    }
     #crt-dialog h2 { margin: 0 0 14px; font-size: 17px; letter-spacing: 0.2px; }
+    .crt-section {
+      margin: 14px 0 6px;
+      font-size: 11px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: #8a8a8a;
+      border-top: 1px solid #2a2a2a;
+      padding-top: 10px;
+    }
+    .crt-section:first-of-type { border-top: 0; padding-top: 0; margin-top: 4px; }
     .crt-row {
       display: grid;
-      grid-template-columns: 110px 1fr 44px;
+      grid-template-columns: 130px 1fr 44px;
       align-items: center;
       gap: 12px;
-      margin: 0 0 10px;
+      margin: 0 0 8px;
     }
-    .crt-row span { color: #d5d5d5; }
+    .crt-row span { color: #d5d5d5; font-size: 13px; }
     .crt-row input[type="range"] {
       width: 100%;
       accent-color: #79c0ff;
@@ -208,7 +225,8 @@
       text-align: right;
       font-size: 12px;
     }
-    .crt-row-select select {
+    .crt-row-select select,
+    .crt-row-color input[type="color"] {
       grid-column: 2 / span 2;
       background: #2a2a2a;
       color: #e6e6e6;
@@ -219,7 +237,15 @@
       font-size: 13px;
       cursor: pointer;
     }
-    .crt-row-select select:focus-visible {
+    .crt-row-color input[type="color"] {
+      padding: 2px;
+      height: 30px;
+      width: 64px;
+      grid-column: 2;
+      justify-self: start;
+    }
+    .crt-row-select select:focus-visible,
+    .crt-row-color input[type="color"]:focus-visible {
       outline: 2px solid #79c0ff;
       outline-offset: 1px;
     }
@@ -228,6 +254,10 @@
       display: flex;
       justify-content: flex-end;
       gap: 8px;
+      position: sticky;
+      bottom: -18px;
+      background: #1b1b1b;
+      padding: 12px 0 4px;
     }
     #crt-dialog button {
       background: #2a2a2a;
@@ -327,6 +357,43 @@
   <dialog id="crt-dialog" aria-labelledby="crt-dialog-title">
     <div class="info-card">
       <h2 id="crt-dialog-title">CRT effects</h2>
+
+      <div class="crt-section">Profile</div>
+      <label class="crt-row crt-row-select">
+        <span>Preset</span>
+        <select id="crt-profile">
+          <option value="spectrum">Sinclair Spectrum</option>
+          <option value="amber">Amber phosphor</option>
+          <option value="green">Green phosphor</option>
+          <option value="apple2">Apple ][</option>
+          <option value="ibm">IBM CGA</option>
+          <option value="vintage">Vintage</option>
+          <option value="custom">Custom</option>
+        </select>
+      </label>
+
+      <div class="crt-section">Image</div>
+      <label class="crt-row">
+        <span>Brightness</span>
+        <input type="range" id="crt-brightness" min="0" max="100" value="50">
+        <output for="crt-brightness">50</output>
+      </label>
+      <label class="crt-row">
+        <span>Contrast</span>
+        <input type="range" id="crt-contrast" min="0" max="100" value="50">
+        <output for="crt-contrast">50</output>
+      </label>
+      <label class="crt-row crt-row-color">
+        <span>Tint color</span>
+        <input type="color" id="crt-tintColor" value="#ffffff">
+      </label>
+      <label class="crt-row">
+        <span>Tint strength</span>
+        <input type="range" id="crt-tintStrength" min="0" max="100" value="0">
+        <output for="crt-tintStrength">0</output>
+      </label>
+
+      <div class="crt-section">Geometry</div>
       <label class="crt-row">
         <span>Curvature</span>
         <input type="range" id="crt-curvature" min="0" max="100" value="22">
@@ -336,6 +403,27 @@
         <span>Corner radius</span>
         <input type="range" id="crt-corners" min="0" max="100" value="11">
         <output for="crt-corners">11</output>
+      </label>
+      <label class="crt-row">
+        <span>Vignette</span>
+        <input type="range" id="crt-vignette" min="0" max="100" value="100">
+        <output for="crt-vignette">100</output>
+      </label>
+      <label class="crt-row">
+        <span>Ambient light</span>
+        <input type="range" id="crt-ambient" min="0" max="100" value="25">
+        <output for="crt-ambient">25</output>
+      </label>
+
+      <div class="crt-section">Rasterization</div>
+      <label class="crt-row crt-row-select">
+        <span>Pattern</span>
+        <select id="crt-rasterMode">
+          <option value="off">Off</option>
+          <option value="scanline">Scanlines only</option>
+          <option value="pixel">Pixel grid</option>
+          <option value="subpixel">RGB stripe (default)</option>
+        </select>
       </label>
       <label class="crt-row">
         <span>Scanlines</span>
@@ -352,21 +440,49 @@
         <input type="range" id="crt-maskScale" min="1" max="6" value="3" step="1">
         <output for="crt-maskScale">3</output>
       </label>
-      <label class="crt-row">
-        <span>Vignette</span>
-        <input type="range" id="crt-vignette" min="0" max="100" value="100">
-        <output for="crt-vignette">100</output>
-      </label>
+
+      <div class="crt-section">Analog artifacts</div>
       <label class="crt-row">
         <span>Glow</span>
         <input type="range" id="crt-glow" min="0" max="100" value="100">
         <output for="crt-glow">100</output>
       </label>
       <label class="crt-row">
-        <span>Chromatic aberration</span>
+        <span>Chromatic ab.</span>
         <input type="range" id="crt-colorOffset" min="0" max="100" value="44">
         <output for="crt-colorOffset">44</output>
       </label>
+      <label class="crt-row">
+        <span>Burn-in</span>
+        <input type="range" id="crt-burnIn" min="0" max="100" value="25">
+        <output for="crt-burnIn">25</output>
+      </label>
+      <label class="crt-row">
+        <span>Static noise</span>
+        <input type="range" id="crt-staticNoise" min="0" max="100" value="8">
+        <output for="crt-staticNoise">8</output>
+      </label>
+      <label class="crt-row">
+        <span>Flicker</span>
+        <input type="range" id="crt-flicker" min="0" max="100" value="10">
+        <output for="crt-flicker">10</output>
+      </label>
+      <label class="crt-row">
+        <span>Jitter</span>
+        <input type="range" id="crt-jitter" min="0" max="100" value="15">
+        <output for="crt-jitter">15</output>
+      </label>
+      <label class="crt-row">
+        <span>H-Sync wobble</span>
+        <input type="range" id="crt-hSync" min="0" max="100" value="6">
+        <output for="crt-hSync">6</output>
+      </label>
+      <label class="crt-row">
+        <span>Glow line</span>
+        <input type="range" id="crt-glowLine" min="0" max="100" value="20">
+        <output for="crt-glowLine">20</output>
+      </label>
+
       <div class="actions">
         <button id="crt-reset" type="button">Reset</button>
         <button id="crt-dialog-close" type="button" autofocus>Close</button>
@@ -422,21 +538,60 @@
     // is missing, malformed, or partially populated by an older build.
     const CRT_DEFAULTS = Object.freeze({
       enabled: true,
+      profile: "spectrum",
       curvature: 0.22,
       corners: 0.11,
+      vignette: 1.0,
+      ambient: 0.25,
+      brightness: 0.50,
+      contrast: 0.50,
+      tintColor: "#ffffff",
+      tintStrength: 0.0,
+      rasterMode: "subpixel",
       scanline: 1.0,
       mask: 1.0,
-      vignette: 1.0,
+      maskScale: 3,
       glow: 1.0,
       colorOffset: 0.44,
-      maskScale: 3,            // physical pixels per mask cell (integer 1..MASK_SCALE_MAX)
+      burnIn: 0.25,
+      staticNoise: 0.08,
+      flicker: 0.10,
+      jitter: 0.15,
+      hSync: 0.06,
+      glowLine: 0.20,
     });
+    const CRT_PROFILES = Object.freeze({
+      spectrum: { tintColor: "#ffffff", tintStrength: 0.0, brightness: 0.50, contrast: 0.50 },
+      amber:    { tintColor: "#ffb000", tintStrength: 0.95, brightness: 0.55, contrast: 0.55 },
+      green:    { tintColor: "#33ff66", tintStrength: 0.95, brightness: 0.50, contrast: 0.55 },
+      apple2:   { tintColor: "#33ff33", tintStrength: 1.00, brightness: 0.50, contrast: 0.55 },
+      ibm:      { tintColor: "#e8e8e8", tintStrength: 0.25, brightness: 0.50, contrast: 0.55 },
+      vintage:  { tintColor: "#ffaa66", tintStrength: 0.55, brightness: 0.45, contrast: 0.55 },
+    });
+    const RASTER_MODES = ["off", "scanline", "pixel", "subpixel"];
+    const SLIDER_KEYS = [
+      "curvature", "corners", "vignette", "ambient",
+      "brightness", "contrast", "tintStrength",
+      "scanline", "mask",
+      "glow", "colorOffset", "burnIn",
+      "staticNoise", "flicker", "jitter", "hSync", "glowLine",
+    ];
     const MASK_SCALE_MIN = 1;
     const MASK_SCALE_MAX = 6;
     const CRT_STORAGE_KEY = "crt-params";
     function clamp01(v) { return Math.max(0, Math.min(1, +v || 0)); }
+    function normalizeHexColor(v) {
+      if (typeof v !== "string") return CRT_DEFAULTS.tintColor;
+      const m = /^#([0-9a-fA-F]{6})$/.exec(v.trim());
+      return m ? "#" + m[1].toLowerCase() : CRT_DEFAULTS.tintColor;
+    }
+    function normalizeRasterMode(v) {
+      return RASTER_MODES.includes(v) ? v : CRT_DEFAULTS.rasterMode;
+    }
+    function normalizeProfile(v) {
+      return (v === "custom" || CRT_PROFILES[v]) ? v : CRT_DEFAULTS.profile;
+    }
     function loadCrtParams() {
-      // Migrate the previous single-flag key if present.
       let migrated = null;
       const legacy = localStorage.getItem("crt-enabled");
       if (legacy !== null) migrated = { enabled: legacy !== "0" };
@@ -445,22 +600,30 @@
       catch { /* keep defaults */ }
       const src = { ...CRT_DEFAULTS, ...migrated, ...stored };
       const ms = Math.round(+src.maskScale);
-      return {
-        enabled:     !!src.enabled,
-        curvature:   clamp01(src.curvature),
-        corners:     clamp01(src.corners),
-        scanline:    clamp01(src.scanline),
-        mask:        clamp01(src.mask),
-        vignette:    clamp01(src.vignette),
-        glow:        clamp01(src.glow),
-        colorOffset: clamp01(src.colorOffset),
-        maskScale:   Number.isFinite(ms) ? Math.max(MASK_SCALE_MIN, Math.min(MASK_SCALE_MAX, ms)) : CRT_DEFAULTS.maskScale,
-      };
+      const out = { enabled: !!src.enabled };
+      for (const k of SLIDER_KEYS) out[k] = clamp01(src[k]);
+      out.maskScale = Number.isFinite(ms)
+        ? Math.max(MASK_SCALE_MIN, Math.min(MASK_SCALE_MAX, ms))
+        : CRT_DEFAULTS.maskScale;
+      out.tintColor = normalizeHexColor(src.tintColor);
+      out.rasterMode = normalizeRasterMode(src.rasterMode);
+      out.profile = normalizeProfile(src.profile);
+      return out;
     }
     const crtParams = loadCrtParams();
     function saveCrtParams() {
       try { localStorage.setItem(CRT_STORAGE_KEY, JSON.stringify(crtParams)); }
       catch { /* private mode etc. — silently ignore */ }
+    }
+    function hexToRgb01(hex) {
+      const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
+      if (!m) return [1, 1, 1];
+      const n = parseInt(m[1], 16);
+      return [((n >> 16) & 0xff) / 255, ((n >> 8) & 0xff) / 255, (n & 0xff) / 255];
+    }
+    function rasterModeIndex(name) {
+      const i = RASTER_MODES.indexOf(name);
+      return i < 0 ? RASTER_MODES.indexOf(CRT_DEFAULTS.rasterMode) : i;
     }
 
     // Master toggle button.
@@ -491,20 +654,31 @@
 
     // Per-effect strength dialog. Sliders are wired up live so the
     // change is visible the moment you drag — the next frame() picks
-    // up the new uniform values.
+    // up the new uniform values. Touching any control switches the
+    // profile dropdown to "custom" so the user's hand-tuned values
+    // don't get clobbered by the next preset switch.
     const crtDialog = document.getElementById("crt-dialog");
     const crtSettingsBtn = document.getElementById("crt-settings-btn");
     const crtCloseBtn = document.getElementById("crt-dialog-close");
     const crtResetBtn = document.getElementById("crt-reset");
-    const sliderKeys = ["curvature", "corners", "scanline", "mask", "vignette", "glow", "colorOffset"];
+    const profileSelect = document.getElementById("crt-profile");
+    const rasterSelect  = document.getElementById("crt-rasterMode");
+    const tintColorInput = document.getElementById("crt-tintColor");
     const sliders = {};
-    for (const k of sliderKeys) {
+    function markCustomProfile() {
+      if (crtParams.profile !== "custom") {
+        crtParams.profile = "custom";
+        profileSelect.value = "custom";
+      }
+    }
+    for (const k of SLIDER_KEYS) {
       const input = document.getElementById("crt-" + k);
       const output = input.parentElement.querySelector("output");
       sliders[k] = { input, output };
       input.addEventListener("input", () => {
         crtParams[k] = clamp01(+input.value / 100);
         output.textContent = Math.round(crtParams[k] * 100);
+        markCustomProfile();
         saveCrtParams();
       });
     }
@@ -518,16 +692,43 @@
         ? Math.max(MASK_SCALE_MIN, Math.min(MASK_SCALE_MAX, v))
         : CRT_DEFAULTS.maskScale;
       maskScaleOutput.textContent = String(crtParams.maskScale);
+      markCustomProfile();
+      saveCrtParams();
+    });
+    rasterSelect.addEventListener("change", () => {
+      crtParams.rasterMode = normalizeRasterMode(rasterSelect.value);
+      markCustomProfile();
+      saveCrtParams();
+    });
+    tintColorInput.addEventListener("input", () => {
+      crtParams.tintColor = normalizeHexColor(tintColorInput.value);
+      markCustomProfile();
+      saveCrtParams();
+    });
+    profileSelect.addEventListener("change", () => {
+      const v = profileSelect.value;
+      if (v === "custom") {
+        // Stay on current values; just mark profile.
+        crtParams.profile = "custom";
+      } else if (CRT_PROFILES[v]) {
+        crtParams.profile = v;
+        Object.assign(crtParams, CRT_PROFILES[v]);
+        crtParams.tintColor = normalizeHexColor(crtParams.tintColor);
+      }
+      syncSlidersFromState();
       saveCrtParams();
     });
     function syncSlidersFromState() {
-      for (const k of sliderKeys) {
+      for (const k of SLIDER_KEYS) {
         const v = Math.round(crtParams[k] * 100);
         sliders[k].input.value = v;
         sliders[k].output.textContent = v;
       }
       maskScaleInput.value = String(crtParams.maskScale);
       maskScaleOutput.textContent = String(crtParams.maskScale);
+      tintColorInput.value = crtParams.tintColor;
+      rasterSelect.value = crtParams.rasterMode;
+      profileSelect.value = crtParams.profile;
     }
     syncSlidersFromState();
     crtSettingsBtn.addEventListener("click", () => {
@@ -546,14 +747,11 @@
     });
     crtDialog.addEventListener("close", () => { canvas.focus(); });
     crtResetBtn.addEventListener("click", () => {
-      crtParams.curvature   = CRT_DEFAULTS.curvature;
-      crtParams.corners     = CRT_DEFAULTS.corners;
-      crtParams.scanline    = CRT_DEFAULTS.scanline;
-      crtParams.mask        = CRT_DEFAULTS.mask;
-      crtParams.vignette    = CRT_DEFAULTS.vignette;
-      crtParams.glow        = CRT_DEFAULTS.glow;
-      crtParams.colorOffset = CRT_DEFAULTS.colorOffset;
-      crtParams.maskScale   = CRT_DEFAULTS.maskScale;
+      for (const k of SLIDER_KEYS) crtParams[k] = CRT_DEFAULTS[k];
+      crtParams.maskScale  = CRT_DEFAULTS.maskScale;
+      crtParams.tintColor  = CRT_DEFAULTS.tintColor;
+      crtParams.rasterMode = CRT_DEFAULTS.rasterMode;
+      crtParams.profile    = CRT_DEFAULTS.profile;
       syncSlidersFromState();
       saveCrtParams();
     });
@@ -574,46 +772,58 @@ void main() {
   gl_Position = vec4(a_pos, 0.0, 1.0);
 }`;
 
-    // Original in-house CRT pipeline (per-axis barrel warp, luminance-
-    // preserving scanlines, 3-pixel RGB stripe aperture mask, vignette,
-    // rounded bezel) with three carry-over additions on top: chromatic
-    // aberration on the texture sample, a single-pass highlight glow,
-    // and a mask-scale slider so the user picks how chunky the phosphor
-    // pattern reads. The mask deliberately samples in warped-uv space so
-    // it bends along the curvature, which we'd lost when porting the
-    // gl_FragCoord-based Harrison Allen shader.
+    // CRT pipeline modeled on cool-retro-term: u_tex is the burn-in
+    // accumulator (the 256x192 Spectrum framebuffer blended with prior
+    // frames in a separate pass) and this shader layers analog
+    // artifacts on top. Order matters: pre-warp wobble/jitter, then
+    // barrel distortion, then sample, then per-pixel grading
+    // (glow → brightness/contrast → tint), then raster pattern,
+    // then analog noise/flicker, then vignette/ambient halo, then
+    // bezel cutoff. The "off" branch keeps the original raw passthrough
+    // identical to the pre-shader 2D canvas.
     const FRAG_SRC = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 out vec4 frag;
 
-uniform sampler2D u_tex;            // 256x192 Spectrum screen
+uniform sampler2D u_tex;            // 256x192 burn-in accumulator (= live spectrum when burn-in=0)
 uniform vec4  u_screenRect;         // x0,y0,x1,y1 of Spectrum screen in viewport [0..1]
 uniform vec3  u_stripeColors[16];
 uniform int   u_stripeCount;
-uniform vec2  u_outputSize;         // physical canvas pixels (DPR-scaled) — mask sampling
-uniform float u_enabled;            // master: 1 = CRT pipeline on, 0 = raw passthrough
-uniform float u_curvature;          // 0 = flat, 1 = full barrel
-uniform float u_corners;            // 0 = sharp, 1 = fully rounded CRT bezel
-uniform float u_scanline;           // 0..1 — luminance-preserving horizontal scanline modulation
-uniform float u_mask;               // 0..1 — RGB stripe aperture-mask strength
-uniform float u_vignette;           // 0..1 — corner falloff
-uniform float u_glow;               // 0..1 — highlight bloom approximation
-uniform float u_colorOffset;        // 0..1 — chromatic-aberration offset on R/B channels
-uniform float u_maskScale;          // physical pixels per mask cell (>= 1; integer in practice)
+uniform vec2  u_outputSize;
+uniform float u_enabled;
+uniform float u_time;               // seconds since start
+uniform float u_curvature;
+uniform float u_corners;
+uniform float u_scanline;
+uniform float u_mask;
+uniform float u_vignette;
+uniform float u_glow;
+uniform float u_colorOffset;
+uniform float u_maskScale;
+uniform float u_staticNoise;
+uniform float u_flicker;
+uniform float u_jitter;
+uniform float u_hSync;
+uniform float u_glowLine;
+uniform float u_ambient;
+uniform float u_brightness;         // 0..1 (0.5 = neutral)
+uniform float u_contrast;           // 0..1 (0.5 = neutral)
+uniform vec3  u_tintColor;
+uniform float u_tintStrength;       // 0..1
+uniform int   u_rasterMode;         // 0=off 1=scanline 2=pixel-grid 3=stripe
+uniform vec3  u_sceneMean;          // mean RGB of spectrum content, for ambient halo
+
+float hash11(float x) { return fract(sin(x * 12.9898) * 43758.5453); }
+float hash21(vec2 p)  { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
 vec2 curve(vec2 uv, float strength) {
-  // Per-axis barrel distortion; strength scales how far the corners
-  // pull inward, so the slider lerps smoothly from flat to fully
-  // curved without sampling outside the texture.
   uv = uv * 2.0 - 1.0;
   vec2 off = uv.yx * uv.yx;
   uv += uv * vec2(off.x / 5.0, off.y / 4.0) * strength;
   return uv * 0.5 + 0.5;
 }
 
-// Texture sample with chromatic aberration: shift R and B in opposite
-// directions along texture-x by ~colorOffset texels. G stays put.
 vec3 sampleTex(vec2 specUV) {
   vec2 texSize = vec2(textureSize(u_tex, 0));
   float dx = u_colorOffset * 2.0 / texSize.x;
@@ -623,10 +833,13 @@ vec3 sampleTex(vec2 specUV) {
   return vec3(r, g, b);
 }
 
+bool insideRect(vec2 uv) {
+  return uv.x >= u_screenRect.x && uv.x <= u_screenRect.z
+      && uv.y >= u_screenRect.y && uv.y <= u_screenRect.w;
+}
+
 vec3 sampleScreen(vec2 uv) {
-  bool inside = uv.x >= u_screenRect.x && uv.x <= u_screenRect.z
-             && uv.y >= u_screenRect.y && uv.y <= u_screenRect.w;
-  if (inside) {
+  if (insideRect(uv)) {
     vec2 s = vec2(
       (uv.x - u_screenRect.x) / (u_screenRect.z - u_screenRect.x),
       (uv.y - u_screenRect.y) / (u_screenRect.w - u_screenRect.y)
@@ -642,14 +855,10 @@ void main() {
   vec2 uv = v_uv;
   bool on = u_enabled > 0.5;
 
-  // Master CRT off → raw passthrough. No warp, no bezel, no mask, no
-  // chromatic aberration, nothing. Same look as the pre-shader 2D
-  // canvas: sharp pixels inside the screen rect, flat BORDER outside.
+  // Master CRT off → raw passthrough.
   if (!on) {
     vec3 c;
-    bool insideRaw = uv.x >= u_screenRect.x && uv.x <= u_screenRect.z
-                  && uv.y >= u_screenRect.y && uv.y <= u_screenRect.w;
-    if (insideRaw) {
+    if (insideRect(uv)) {
       vec2 s = vec2(
         (uv.x - u_screenRect.x) / (u_screenRect.z - u_screenRect.x),
         (uv.y - u_screenRect.y) / (u_screenRect.w - u_screenRect.y)
@@ -664,58 +873,142 @@ void main() {
     return;
   }
 
+  // --- Pre-warp time-domain distortions ---
+  // H-sync wobble: sinusoidal horizontal shift modulated by a slow
+  // envelope, so the picture leans left/right intermittently like a
+  // misaligned analog sync.
+  if (u_hSync > 0.0) {
+    float env = 0.5 + 0.5 * sin(u_time * 1.7);
+    float wob = sin(uv.y * 18.0 + u_time * 9.0) * env;
+    uv.x += wob * 0.012 * u_hSync;
+  }
+  // Jitter: tiny per-frame UV shake.
+  if (u_jitter > 0.0) {
+    float t  = floor(u_time * 60.0);
+    float jx = hash21(vec2(t, 1.0)) - 0.5;
+    float jy = hash21(vec2(t, 7.0)) - 0.5;
+    uv += vec2(jx * 0.0035, jy * 0.0012) * u_jitter;
+  }
+
   if (u_curvature > 0.0) uv = curve(uv, u_curvature);
 
-  // Rounded bezel mask in unit-canvas space (after warp, so it follows
-  // the curved face). Anti-aliased via screen-space derivatives.
-  float bezelR = 0.12 * u_corners;
-  vec2  bq     = abs(uv - 0.5) - 0.5 + bezelR;
-  float bezelD = min(max(bq.x, bq.y), 0.0) + length(max(bq, vec2(0.0))) - bezelR;
+  // Bezel SDF (computed now, applied at the end so analog effects can
+  // still touch fragments inside the bezel arc).
+  float bezelR  = 0.12 * u_corners;
+  vec2  bq      = abs(uv - 0.5) - 0.5 + bezelR;
+  float bezelD  = min(max(bq.x, bq.y), 0.0) + length(max(bq, vec2(0.0))) - bezelR;
   float bezelAA = max(fwidth(bezelD), 1e-5);
   if (bezelD > bezelAA * 2.0) { frag = vec4(0.0, 0.0, 0.0, 1.0); return; }
   float bezelMask = 1.0 - smoothstep(-bezelAA, bezelAA, bezelD);
 
   vec3 color = sampleScreen(uv);
 
+  // Glow line: slow bright horizontal sweep across the entire CRT face
+  // (the electron beam scans the whole phosphor tube, not just the
+  // visible-raster paper area, so the line must cross border too).
+  if (u_glowLine > 0.0) {
+    float ly = fract(u_time * 0.07);
+    float line = smoothstep(0.025, 0.0, abs(uv.y - ly));
+    color += vec3(line) * u_glowLine * 0.35;
+  }
+
   // Highlight glow — single-pass bloom approximation. Boosts bright
-  // pixels before the mask so the gain spreads through the phosphor
-  // stripe naturally.
+  // pixels before the mask so the gain spreads through the phosphor.
   if (u_glow > 0.0) {
     float lumaPre = dot(color, vec3(0.2126, 0.7152, 0.0722));
     float halo = smoothstep(0.4, 1.0, lumaPre) * u_glow * 0.6;
     color *= 1.0 + halo;
   }
 
-  // Luminance-preserving scanline. Bright peaks compensate for dark
-  // troughs so the per-pixel average tracks input luma; dim pixels
-  // get a softer modulation so dark scenes stay readable. Sampled in
-  // warped uv space (× output height) so the lines bend with the
-  // curvature.
-  float py   = uv.y * u_outputSize.y;
-  float scan = 0.5 + 0.5 * sin(py * 3.14159);
-  float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
-  float strength = mix(0.10, 0.32, 1.0 - luma) * u_scanline;
-  float scanMul = mix(1.0 + strength, 1.0 - strength, scan);
-  color *= scanMul;
+  // Brightness and contrast around 0.5 (neutral at slider=0.5).
+  float bMul = mix(0.5, 1.5, u_brightness);
+  float cMul = mix(0.5, 1.5, u_contrast);
+  color = (color - 0.5) * cMul + 0.5;
+  color *= bMul;
 
-  // 3-pixel RGB stripe aperture mask in warped uv space, so the mask
-  // cells bend with the curvature the same way a real CRT's phosphor
-  // grille sits on the curved glass. u_maskScale scales the cell
-  // width up so the stripes read as chunky pixels on hi-DPI screens.
-  float px = uv.x * u_outputSize.x / max(u_maskScale, 1.0);
-  int mi = int(mod(px, 3.0));
-  vec3 baseMask = (mi == 0) ? vec3(1.15, 0.85, 0.85)
-                : (mi == 1) ? vec3(0.85, 1.15, 0.85)
-                            : vec3(0.85, 0.85, 1.15);
-  color *= mix(vec3(1.0), baseMask, u_mask);
+  // Chroma tint — monochromatic phosphor by remapping toward tintColor
+  // via luminance. tintStrength=0 leaves the rainbow palette intact.
+  if (u_tintStrength > 0.0) {
+    float luma = clamp(dot(color, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+    vec3 mono = u_tintColor * luma;
+    color = mix(color, mono, u_tintStrength);
+  }
 
-  // Vignette toward the corners.
+  // Luminance-preserving horizontal scanlines (modes 1/2/3).
+  if (u_rasterMode != 0 && u_scanline > 0.0) {
+    float py   = uv.y * u_outputSize.y;
+    float scan = 0.5 + 0.5 * sin(py * 3.14159);
+    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    float strength = mix(0.10, 0.32, 1.0 - luma) * u_scanline;
+    float scanMul = mix(1.0 + strength, 1.0 - strength, scan);
+    color *= scanMul;
+  }
+  // Aperture/phosphor pattern.
+  if (u_rasterMode == 3 && u_mask > 0.0) {
+    // 3-pixel RGB stripe (default subpixel).
+    float px = uv.x * u_outputSize.x / max(u_maskScale, 1.0);
+    int mi = int(mod(px, 3.0));
+    vec3 baseMask = (mi == 0) ? vec3(1.15, 0.85, 0.85)
+                  : (mi == 1) ? vec3(0.85, 1.15, 0.85)
+                              : vec3(0.85, 0.85, 1.15);
+    color *= mix(vec3(1.0), baseMask, u_mask);
+  } else if (u_rasterMode == 2 && u_mask > 0.0) {
+    // Pixel grid — vertical complement to the horizontal scanlines.
+    float px = uv.x * u_outputSize.x / max(u_maskScale, 1.0);
+    float vscan = 0.5 + 0.5 * sin(px * 3.14159);
+    float luma2 = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    float strength2 = mix(0.08, 0.26, 1.0 - luma2) * u_mask;
+    color *= mix(1.0 + strength2, 1.0 - strength2, vscan);
+  }
+
+  // Static noise — additive snow.
+  if (u_staticNoise > 0.0) {
+    float n = hash21(uv * u_outputSize + u_time * 91.31);
+    color += (n - 0.5) * u_staticNoise * 0.22;
+  }
+
+  // Global flicker — brightness wobble that updates each 60Hz tick.
+  if (u_flicker > 0.0) {
+    float fl = hash11(floor(u_time * 60.0) + 0.5);
+    color *= 1.0 - u_flicker * 0.18 * (fl - 0.5);
+  }
+
+  // Vignette.
   vec2 d = uv * 2.0 - 1.0;
   float vigBase = clamp(1.0 - dot(d, d) * 0.18, 0.0, 1.0);
   color *= mix(1.0, vigBase, u_vignette);
 
+  // Ambient light — phosphor face glow proportional to scene
+  // brightness. Lifts the entire CRT face (paper + border) uniformly
+  // and decays outside the rect; the inside-the-rect dist is 0 so
+  // halo=1 there, which keeps the paper at the same ambient level as
+  // the border (no dark interior vs lit border seam).
+  if (u_ambient > 0.0) {
+    vec2 dist = max(max(u_screenRect.xy - uv, uv - u_screenRect.zw), vec2(0.0));
+    float dN = length(dist);
+    float halo = exp(-dN * 14.0);
+    color += u_sceneMean * halo * u_ambient * 0.9;
+  }
+
   color *= bezelMask;
   frag = vec4(color, 1.0);
+}`;
+
+    // Burn-in accumulator pass. Runs at the Spectrum's native 256x192
+    // into a ping-pong FBO so the live frame leaves a phosphor trail.
+    // max() blend (not additive) preserves color while letting bright
+    // pixels persist across many frames, decaying via u_decay.
+    const BURN_FRAG_SRC = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 frag;
+uniform sampler2D u_spec;
+uniform sampler2D u_prev;
+uniform float u_decay;
+void main() {
+  vec3 sp = texture(u_spec, v_uv).rgb;
+  vec3 pr = texture(u_prev, v_uv).rgb * u_decay;
+  frag = vec4(max(sp, pr), 1.0);
 }`;
 
     function compileShader(gl, type, src) {
@@ -734,8 +1027,8 @@ void main() {
       const gl = canvas.getContext("webgl2", { antialias: false, premultipliedAlpha: false });
       if (!gl) return null;
 
-      const vs = compileShader(gl, gl.VERTEX_SHADER, VERT_SRC);
-      const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAG_SRC);
+      const vs   = compileShader(gl, gl.VERTEX_SHADER, VERT_SRC);
+      const fs   = compileShader(gl, gl.FRAGMENT_SHADER, FRAG_SRC);
       const prog = gl.createProgram();
       gl.attachShader(prog, vs);
       gl.attachShader(prog, fs);
@@ -744,7 +1037,18 @@ void main() {
       if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
         throw new Error("program link failed: " + gl.getProgramInfoLog(prog));
       }
-      gl.useProgram(prog);
+
+      // Burn-in pass program (reuses the same vertex shader).
+      const bvs   = compileShader(gl, gl.VERTEX_SHADER, VERT_SRC);
+      const bfs   = compileShader(gl, gl.FRAGMENT_SHADER, BURN_FRAG_SRC);
+      const bprog = gl.createProgram();
+      gl.attachShader(bprog, bvs);
+      gl.attachShader(bprog, bfs);
+      gl.bindAttribLocation(bprog, 0, "a_pos");
+      gl.linkProgram(bprog);
+      if (!gl.getProgramParameter(bprog, gl.LINK_STATUS)) {
+        throw new Error("burn-in program link failed: " + gl.getProgramInfoLog(bprog));
+      }
 
       // Full-screen triangle — one draw call covers the whole viewport.
       const vbo = gl.createBuffer();
@@ -755,16 +1059,44 @@ void main() {
       gl.enableVertexAttribArray(0);
       gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
+      // Spectrum framebuffer texture (256x192 RGBA).
       const tex = gl.createTexture();
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       // The Spectrum framebuffer has top-left origin (matches ImageData);
       // flip the upload so UV (0,0) is the top of the screen.
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 192, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
 
+      // Burn-in ping-pong FBOs at Spectrum native resolution (49K
+      // texels — vanishingly cheap to update each frame).
+      const burnTexs = [];
+      const burnFbos = [];
+      for (let i = 0; i < 2; i++) {
+        const t = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 192, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        const fb = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+        // Clear to opaque black so the first frame has no garbage trail.
+        gl.viewport(0, 0, 256, 192);
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        burnTexs.push(t);
+        burnFbos.push(fb);
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+      gl.useProgram(prog);
       const u = {
         tex:          gl.getUniformLocation(prog, "u_tex"),
         screenRect:   gl.getUniformLocation(prog, "u_screenRect"),
@@ -772,6 +1104,7 @@ void main() {
         stripeCount:  gl.getUniformLocation(prog, "u_stripeCount"),
         outputSize:   gl.getUniformLocation(prog, "u_outputSize"),
         enabled:      gl.getUniformLocation(prog, "u_enabled"),
+        time:         gl.getUniformLocation(prog, "u_time"),
         curvature:    gl.getUniformLocation(prog, "u_curvature"),
         corners:      gl.getUniformLocation(prog, "u_corners"),
         scanline:     gl.getUniformLocation(prog, "u_scanline"),
@@ -780,22 +1113,55 @@ void main() {
         glow:         gl.getUniformLocation(prog, "u_glow"),
         colorOffset:  gl.getUniformLocation(prog, "u_colorOffset"),
         maskScale:    gl.getUniformLocation(prog, "u_maskScale"),
+        staticNoise:  gl.getUniformLocation(prog, "u_staticNoise"),
+        flicker:      gl.getUniformLocation(prog, "u_flicker"),
+        jitter:       gl.getUniformLocation(prog, "u_jitter"),
+        hSync:        gl.getUniformLocation(prog, "u_hSync"),
+        glowLine:     gl.getUniformLocation(prog, "u_glowLine"),
+        ambient:      gl.getUniformLocation(prog, "u_ambient"),
+        brightness:   gl.getUniformLocation(prog, "u_brightness"),
+        contrast:     gl.getUniformLocation(prog, "u_contrast"),
+        tintColor:    gl.getUniformLocation(prog, "u_tintColor"),
+        tintStrength: gl.getUniformLocation(prog, "u_tintStrength"),
+        rasterMode:   gl.getUniformLocation(prog, "u_rasterMode"),
+        sceneMean:    gl.getUniformLocation(prog, "u_sceneMean"),
       };
       gl.uniform1i(u.tex, 0);
 
-      return { gl, prog, tex, u, screenRect: [0, 0, 1, 1] };
+      gl.useProgram(bprog);
+      const bu = {
+        spec:  gl.getUniformLocation(bprog, "u_spec"),
+        prev:  gl.getUniformLocation(bprog, "u_prev"),
+        decay: gl.getUniformLocation(bprog, "u_decay"),
+      };
+      gl.uniform1i(bu.spec, 0);
+      gl.uniform1i(bu.prev, 1);
+
+      gl.useProgram(prog);
+
+      return {
+        gl, prog, bprog, tex, u, bu,
+        burnTexs, burnFbos,
+        // Index of the FBO we *write* to this frame; the other is the
+        // previous-frame source. Swapped after each draw.
+        burnWrite: 0,
+        screenRect: [0, 0, 1, 1],
+        t0: performance.now(),
+      };
     }
 
     function applyCrtFilter() {
       if (!glCtx) return;
-      const { gl, tex } = glCtx;
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      // Sharp nearest-neighbor when CRT is off; linear when on so the
-      // scanline / aperture-mask sampling at sub-texel positions
-      // doesn't expose chunky pixel stair-stepping.
+      const { gl, burnTexs } = glCtx;
+      // Burn-in textures feed the final CRT pass. Linear smooths the
+      // sub-texel sampling for scanlines/mask; nearest gives sharp
+      // pixels in raw passthrough.
       const f = crtParams.enabled ? gl.LINEAR : gl.NEAREST;
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
+      for (const t of burnTexs) {
+        gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
+      }
     }
 
     function resizeGL() {
@@ -934,6 +1300,18 @@ void main() {
     // Reusable scratch buffer for the shader's stripe palette uniform.
     // Sized to vec3[16] — the GLSL array length.
     const stripeUniformBuf = new Float32Array(16 * 3);
+    // Scratch for the per-frame scene-mean RGB (for ambient halo).
+    const sceneMeanBuf = new Float32Array(3);
+    function computeSceneMean(buf, out) {
+      // Sample every 16th pixel — 3072 samples, ~50µs in JS, plenty for
+      // a low-frequency halo color.
+      let r = 0, g = 0, b = 0, n = 0;
+      for (let i = 0; i < buf.length; i += 64) {
+        r += buf[i]; g += buf[i + 1]; b += buf[i + 2]; n++;
+      }
+      const k = 1 / (n * 255);
+      out[0] = r * k; out[1] = g * k; out[2] = b * k;
+    }
 
     function frame() {
       const buf = sys.render();
@@ -944,11 +1322,36 @@ void main() {
       const stripes = sys.take_border_stripes();
 
       if (glCtx) {
-        const { gl, tex, u, screenRect } = glCtx;
+        const { gl, prog, bprog, tex, u, bu, burnTexs, burnFbos, screenRect } = glCtx;
+
+        // 1. Upload the live Spectrum framebuffer.
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, tex);
         gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 192, gl.RGBA, gl.UNSIGNED_BYTE, buf);
 
+        // 2. Burn-in pass: write to burnFbos[write], reading the
+        // previous accumulator. max(spec, prev*decay) keeps bright
+        // pixels glowing for ~(1/(1-decay)) frames. Always run it so
+        // the burn-in tex is the canonical "screen content" texture
+        // for the final pass; decay=0 makes it a passthrough.
+        const writeIdx = glCtx.burnWrite;
+        const readIdx  = 1 - writeIdx;
+        const burnDecay = crtParams.enabled
+          ? 0.95 + 0.045 * crtParams.burnIn  // 0.95..0.995 (slider 0..1)
+          : 0.0;
+        const burnActive = crtParams.enabled && crtParams.burnIn > 0.0;
+        const effectiveDecay = burnActive ? burnDecay : 0.0;
+        gl.useProgram(bprog);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, burnFbos[writeIdx]);
+        gl.viewport(0, 0, 256, 192);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, burnTexs[readIdx]);
+        gl.uniform1f(bu.decay, effectiveDecay);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+        // 3. Main CRT pass — sample the just-written burn-in tex.
         let count;
         if (stripes.length >= 2) {
           count = Math.min(stripes.length, 16);
@@ -965,21 +1368,45 @@ void main() {
           stripeUniformBuf[1] = ((rgb >>  8) & 0xff) / 255;
           stripeUniformBuf[2] = ( rgb        & 0xff) / 255;
         }
+        computeSceneMean(buf, sceneMeanBuf);
+        const tint = hexToRgb01(crtParams.tintColor);
 
-        gl.uniform4fv(u.screenRect, screenRect);
+        gl.useProgram(prog);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, burnTexs[writeIdx]);
+
+        gl.uniform4fv(u.screenRect,   screenRect);
         gl.uniform3fv(u.stripeColors, stripeUniformBuf);
-        gl.uniform1i(u.stripeCount, count);
-        gl.uniform2f(u.outputSize,  canvas.width, canvas.height);
-        gl.uniform1f(u.enabled,     crtParams.enabled ? 1.0 : 0.0);
-        gl.uniform1f(u.curvature,   crtParams.curvature);
-        gl.uniform1f(u.corners,     crtParams.corners);
-        gl.uniform1f(u.scanline,    crtParams.scanline);
-        gl.uniform1f(u.mask,        crtParams.mask);
-        gl.uniform1f(u.vignette,    crtParams.vignette);
-        gl.uniform1f(u.glow,        crtParams.glow);
-        gl.uniform1f(u.colorOffset, crtParams.colorOffset);
-        gl.uniform1f(u.maskScale,   crtParams.maskScale);
+        gl.uniform1i(u.stripeCount,   count);
+        gl.uniform2f(u.outputSize,    canvas.width, canvas.height);
+        gl.uniform1f(u.enabled,       crtParams.enabled ? 1.0 : 0.0);
+        gl.uniform1f(u.time,          (performance.now() - glCtx.t0) * 0.001);
+        gl.uniform1f(u.curvature,     crtParams.curvature);
+        gl.uniform1f(u.corners,       crtParams.corners);
+        gl.uniform1f(u.scanline,      crtParams.scanline);
+        gl.uniform1f(u.mask,          crtParams.mask);
+        gl.uniform1f(u.vignette,      crtParams.vignette);
+        gl.uniform1f(u.glow,          crtParams.glow);
+        gl.uniform1f(u.colorOffset,   crtParams.colorOffset);
+        gl.uniform1f(u.maskScale,     crtParams.maskScale);
+        gl.uniform1f(u.staticNoise,   crtParams.staticNoise);
+        gl.uniform1f(u.flicker,       crtParams.flicker);
+        gl.uniform1f(u.jitter,        crtParams.jitter);
+        gl.uniform1f(u.hSync,         crtParams.hSync);
+        gl.uniform1f(u.glowLine,      crtParams.glowLine);
+        gl.uniform1f(u.ambient,       crtParams.ambient);
+        gl.uniform1f(u.brightness,    crtParams.brightness);
+        gl.uniform1f(u.contrast,      crtParams.contrast);
+        gl.uniform3f(u.tintColor,     tint[0], tint[1], tint[2]);
+        gl.uniform1f(u.tintStrength,  crtParams.tintStrength);
+        gl.uniform1i(u.rasterMode,    rasterModeIndex(crtParams.rasterMode));
+        gl.uniform3fv(u.sceneMean,    sceneMeanBuf);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+        // 4. Swap ping-pong for next frame.
+        glCtx.burnWrite = readIdx;
       } else {
         // Legacy 2D path.
         const img = new ImageData(new Uint8ClampedArray(buf), 256, 192);

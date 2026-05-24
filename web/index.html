@@ -152,12 +152,12 @@
       z-index: 10;
     }
     #crt-btn {
-      right: 104px;
+      right: 60px;
       font: 600 11px/1 system-ui, sans-serif;
       letter-spacing: 0.5px;
     }
     #crt-settings-btn {
-      right: 60px;
+      right: 104px;
       font: 600 18px/1 system-ui, sans-serif;
     }
     #crt-btn:hover, #crt-settings-btn:hover {
@@ -391,7 +391,7 @@
     // Persisted as a single JSON blob; falls back cleanly when the key
     // is missing, malformed, or partially populated by an older build.
     const CRT_DEFAULTS = Object.freeze({
-      enabled: true, curvature: 1, scanline: 1, mask: 1, vignette: 1, corners: 1,
+      enabled: true, curvature: 0.22, corners: 0.11, scanline: 1, mask: 1, vignette: 1,
     });
     const CRT_STORAGE_KEY = "crt-params";
     function clamp01(v) { return Math.max(0, Math.min(1, +v || 0)); }
@@ -427,7 +427,23 @@
       crtBtn.setAttribute("aria-pressed", crtParams.enabled ? "true" : "false");
       saveCrtParams();
       applyCrtFilter();
+      updateCrtChromeVisibility();
     });
+
+    // Hide the chrome that doesn't apply in the current mode. The
+    // settings cog is only meaningful when the CRT pipeline is on;
+    // the legacy 2D fallback drops both buttons entirely.
+    function updateCrtChromeVisibility() {
+      if (!glCtx) {
+        crtBtn.style.display = "none";
+        crtSettingsBtn.style.display = "none";
+        if (crtDialog.open) crtDialog.close();
+        return;
+      }
+      crtBtn.style.display = "";
+      crtSettingsBtn.style.display = crtParams.enabled ? "" : "none";
+      if (!crtParams.enabled && crtDialog.open) crtDialog.close();
+    }
 
     // Per-effect strength dialog. Sliders are wired up live so the
     // change is visible the moment you drag — the next frame() picks
@@ -713,8 +729,6 @@ void main() {
       canvas.width = 256;
       canvas.height = 192;
       ctx2d = canvas.getContext("2d");
-      crtBtn.style.display = "none";
-      crtSettingsBtn.style.display = "none";
       resize2D();
       window.addEventListener("resize", resize2D);
     }
@@ -745,6 +759,7 @@ void main() {
       console.warn("[zxbasic] no WebGL2 — falling back to 2D canvas");
       initLegacy2D();
     }
+    updateCrtChromeVisibility();
 
     // Single AudioContext shared by both key clicks and BEEP playback,
     // declared up-front so neither helper trips a temporal-dead-zone

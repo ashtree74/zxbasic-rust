@@ -24,13 +24,9 @@
   <style>
     html, body {
       margin: 0; padding: 0; height: 100%; overflow: hidden;
-      background: #cdcdcd; /* will be overwritten per frame to the BORDER colour */
+      background: #000; /* black backdrop behind the WebGL canvas */
       font-family: system-ui, sans-serif;
       cursor: default;
-    }
-    body {
-      display: flex; align-items: center; justify-content: center;
-      transition: background-color 60ms linear;
     }
     /* Off-screen text field that lets mobile browsers pop up the soft
        keyboard. We focus it on touch and forward every keystroke through
@@ -50,18 +46,37 @@
     }
 
     canvas {
-      image-rendering: pixelated;
       display: block;
       outline: none;
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
       /* Stop iOS double-tap-to-zoom etc. from interfering with the
          touchstart-to-focus-mobile-input handler below. */
       touch-action: manipulation;
       -webkit-user-select: none;
       user-select: none;
-      /* Sized via inline style at runtime to fit the viewport while keeping
-         the Spectrum 4:3 aspect ratio (256:192 == 4:3). The BORDER colour
-         in the surrounding margin (set by resize()) is what separates the
-         screen from the browser chrome. */
+      /* The canvas spans the full viewport; the WebGL CRT shader paints
+         the Spectrum screen (256:192) centered with the BORDER colour
+         (or per-scanline stripe pattern) around it, plus curvature,
+         scanlines, aperture mask and vignette. */
+    }
+    /* Fallback path: if WebGL2 isn't available we revert to the original
+       2D canvas with nearest-neighbor scaling and CSS-painted border. */
+    canvas.legacy-2d {
+      position: static;
+      inset: auto;
+      width: auto;
+      height: auto;
+      image-rendering: pixelated;
+      margin: auto;
+    }
+    body.legacy-2d {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 60ms linear;
     }
 
     /* Sinclair-stripe brand mark in the bottom-left of the viewport, the
@@ -109,6 +124,101 @@
       outline: 2px solid #fff;
       outline-offset: 2px;
     }
+
+    /* CRT controls — three small buttons stacked to the left of the
+       info button. Same visual language so the cluster reads as one
+       floating control group. CRT = master on/off, ⚙ = effect panel. */
+    #crt-btn, #crt-settings-btn {
+      position: fixed;
+      bottom: 16px;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.5);
+      background: rgba(0, 0, 0, 0.55);
+      color: #fff;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      backdrop-filter: blur(4px);
+      transition: background 120ms ease, transform 120ms ease, opacity 120ms ease;
+      z-index: 10;
+    }
+    #crt-btn {
+      right: 104px;
+      font: 600 11px/1 system-ui, sans-serif;
+      letter-spacing: 0.5px;
+    }
+    #crt-settings-btn {
+      right: 60px;
+      font: 600 18px/1 system-ui, sans-serif;
+    }
+    #crt-btn:hover, #crt-settings-btn:hover {
+      background: rgba(0, 0, 0, 0.8);
+      transform: scale(1.08);
+    }
+    #crt-btn:focus-visible, #crt-settings-btn:focus-visible {
+      outline: 2px solid #fff;
+      outline-offset: 2px;
+    }
+    #crt-btn[aria-pressed="false"] {
+      opacity: 0.55;
+    }
+    /* Effect-strength dialog — visual twin of #info-dialog, with a
+       row-per-effect grid layout for label / slider / current value. */
+    #crt-dialog {
+      max-width: 460px;
+      width: calc(100% - 48px);
+      padding: 0;
+      border: none;
+      border-radius: 12px;
+      background: #1b1b1b;
+      color: #e6e6e6;
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+      font: 14px/1.55 system-ui, sans-serif;
+    }
+    #crt-dialog::backdrop {
+      background: rgba(0, 0, 0, 0.55);
+      backdrop-filter: blur(3px);
+    }
+    #crt-dialog .info-card { padding: 22px 26px 18px; }
+    #crt-dialog h2 { margin: 0 0 14px; font-size: 17px; letter-spacing: 0.2px; }
+    .crt-row {
+      display: grid;
+      grid-template-columns: 110px 1fr 44px;
+      align-items: center;
+      gap: 12px;
+      margin: 0 0 10px;
+    }
+    .crt-row span { color: #d5d5d5; }
+    .crt-row input[type="range"] {
+      width: 100%;
+      accent-color: #79c0ff;
+    }
+    .crt-row output {
+      color: #9a9a9a;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      font-size: 12px;
+    }
+    #crt-dialog .actions {
+      margin-top: 14px;
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    #crt-dialog button {
+      background: #2a2a2a;
+      color: #e6e6e6;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font: inherit;
+      cursor: pointer;
+    }
+    #crt-dialog button:hover { background: #353535; }
 
     /* About dialog. Uses native <dialog> with a polished, narrow card. */
     #info-dialog {
@@ -188,7 +298,41 @@
 
   <img id="brand-mark" src="spectrum-icon.png" alt="" aria-hidden="true">
 
+  <button id="crt-btn" type="button" aria-label="Toggle CRT effect" title="Toggle CRT effect" aria-pressed="true">CRT</button>
+
+  <button id="crt-settings-btn" type="button" aria-label="CRT effect settings" title="CRT effect settings">⚙</button>
+
   <button id="info-btn" type="button" aria-label="About this project" title="About this project">i</button>
+
+  <dialog id="crt-dialog" aria-labelledby="crt-dialog-title">
+    <div class="info-card">
+      <h2 id="crt-dialog-title">CRT effects</h2>
+      <label class="crt-row">
+        <span>Curvature</span>
+        <input type="range" id="crt-curvature" min="0" max="100" value="100">
+        <output for="crt-curvature">100</output>
+      </label>
+      <label class="crt-row">
+        <span>Scanlines</span>
+        <input type="range" id="crt-scanline" min="0" max="100" value="100">
+        <output for="crt-scanline">100</output>
+      </label>
+      <label class="crt-row">
+        <span>Aperture mask</span>
+        <input type="range" id="crt-mask" min="0" max="100" value="100">
+        <output for="crt-mask">100</output>
+      </label>
+      <label class="crt-row">
+        <span>Vignette</span>
+        <input type="range" id="crt-vignette" min="0" max="100" value="100">
+        <output for="crt-vignette">100</output>
+      </label>
+      <div class="actions">
+        <button id="crt-reset" type="button">Reset</button>
+        <button id="crt-dialog-close" type="button" autofocus>Close</button>
+      </div>
+    </div>
+  </dialog>
 
   <dialog id="info-dialog" aria-labelledby="info-title">
     <div class="info-card">
@@ -219,40 +363,358 @@
     await init();
     const sys = new System();
     const canvas = document.getElementById("screen");
-    const ctx = canvas.getContext("2d");
     canvas.focus();
 
-    // Scale the canvas to fit the viewport, keeping the Spectrum 4:3
-    // aspect ratio. The remaining viewport area shows the BORDER colour.
-    function resize() {
-      // Reserve a minimum margin around the canvas so the BORDER colour
-      // always has visible real estate — even at BORDER 7 (white), where
-      // the bezel + shadow on the canvas still separates the Spectrum
-      // screen from the surrounding chrome.
-      const minMargin = 32;
-      const vw = Math.max(0, window.innerWidth - minMargin * 2);
-      const vh = Math.max(0, window.innerHeight - minMargin * 2);
-      const targetAspect = 256 / 192; // 4:3
-      let cw, ch;
-      if (vw / vh > targetAspect) {
-        ch = vh;
-        cw = ch * targetAspect;
-      } else {
-        cw = vw;
-        ch = cw / targetAspect;
+    // Spectrum BORDER palette (RGB floats 0..1), indices 0..7. Matches
+    // crate::display::spectrum_palette(_, bright=false) — keep in sync.
+    const BORDER_PALETTE = [
+      [0,0,0],         [0,0,0.804],     [0.804,0,0],     [0.804,0,0.804],
+      [0,0.804,0],     [0,0.804,0.804], [0.804,0.804,0], [0.804,0.804,0.804],
+    ];
+    // CSS form for the legacy 2D fallback path.
+    const BORDER_PALETTE_CSS = [
+      "#000000", "#0000cd", "#cd0000", "#cd00cd",
+      "#00cd00", "#00cdcd", "#cdcd00", "#cdcdcd",
+    ];
+
+    // CRT state. Master `enabled` flag + per-effect strengths in [0..1].
+    // Persisted as a single JSON blob; falls back cleanly when the key
+    // is missing, malformed, or partially populated by an older build.
+    const CRT_DEFAULTS = Object.freeze({
+      enabled: true, curvature: 1, scanline: 1, mask: 1, vignette: 1,
+    });
+    const CRT_STORAGE_KEY = "crt-params";
+    function clamp01(v) { return Math.max(0, Math.min(1, +v || 0)); }
+    function loadCrtParams() {
+      // Migrate the previous single-flag key if present.
+      let migrated = null;
+      const legacy = localStorage.getItem("crt-enabled");
+      if (legacy !== null) migrated = { enabled: legacy !== "0" };
+      let stored = {};
+      try { stored = JSON.parse(localStorage.getItem(CRT_STORAGE_KEY) || "{}") || {}; }
+      catch { /* keep defaults */ }
+      const src = { ...CRT_DEFAULTS, ...migrated, ...stored };
+      return {
+        enabled:   !!src.enabled,
+        curvature: clamp01(src.curvature),
+        scanline:  clamp01(src.scanline),
+        mask:      clamp01(src.mask),
+        vignette:  clamp01(src.vignette),
+      };
+    }
+    const crtParams = loadCrtParams();
+    function saveCrtParams() {
+      try { localStorage.setItem(CRT_STORAGE_KEY, JSON.stringify(crtParams)); }
+      catch { /* private mode etc. — silently ignore */ }
+    }
+
+    // Master toggle button.
+    const crtBtn = document.getElementById("crt-btn");
+    crtBtn.setAttribute("aria-pressed", crtParams.enabled ? "true" : "false");
+    crtBtn.addEventListener("click", () => {
+      crtParams.enabled = !crtParams.enabled;
+      crtBtn.setAttribute("aria-pressed", crtParams.enabled ? "true" : "false");
+      saveCrtParams();
+      applyCrtFilter();
+    });
+
+    // Per-effect strength dialog. Sliders are wired up live so the
+    // change is visible the moment you drag — the next frame() picks
+    // up the new uniform values.
+    const crtDialog = document.getElementById("crt-dialog");
+    const crtSettingsBtn = document.getElementById("crt-settings-btn");
+    const crtCloseBtn = document.getElementById("crt-dialog-close");
+    const crtResetBtn = document.getElementById("crt-reset");
+    const sliderKeys = ["curvature", "scanline", "mask", "vignette"];
+    const sliders = {};
+    for (const k of sliderKeys) {
+      const input = document.getElementById("crt-" + k);
+      const output = input.parentElement.querySelector("output");
+      sliders[k] = { input, output };
+      input.addEventListener("input", () => {
+        crtParams[k] = clamp01(+input.value / 100);
+        output.textContent = Math.round(crtParams[k] * 100);
+        saveCrtParams();
+      });
+    }
+    function syncSlidersFromState() {
+      for (const k of sliderKeys) {
+        const v = Math.round(crtParams[k] * 100);
+        sliders[k].input.value = v;
+        sliders[k].output.textContent = v;
       }
-      // Snap to integer pixel sizes that are nice multiples of 256/192 when
-      // possible, to keep the pixel grid crisp at common sizes.
+    }
+    syncSlidersFromState();
+    crtSettingsBtn.addEventListener("click", () => {
+      syncSlidersFromState();
+      crtDialog.showModal();
+    });
+    crtCloseBtn.addEventListener("click", () => {
+      crtDialog.close();
+      canvas.focus();
+    });
+    crtDialog.addEventListener("click", (e) => {
+      if (e.target === crtDialog) {
+        crtDialog.close();
+        canvas.focus();
+      }
+    });
+    crtDialog.addEventListener("close", () => { canvas.focus(); });
+    crtResetBtn.addEventListener("click", () => {
+      crtParams.curvature = CRT_DEFAULTS.curvature;
+      crtParams.scanline  = CRT_DEFAULTS.scanline;
+      crtParams.mask      = CRT_DEFAULTS.mask;
+      crtParams.vignette  = CRT_DEFAULTS.vignette;
+      syncSlidersFromState();
+      saveCrtParams();
+    });
+
+    // --- WebGL2 CRT pipeline ---
+    // Single full-screen quad rendered each frame. The Spectrum
+    // framebuffer (256x192 RGBA) is uploaded as a texture and sampled
+    // inside the curved screen rect; outside that rect we paint the
+    // border (solid colour, or horizontal stripes when raster-timing
+    // tricks fired during the frame). Scanlines, aperture mask and
+    // vignette are then layered on top.
+
+    const VERT_SRC = `#version 300 es
+in vec2 a_pos;
+out vec2 v_uv;
+void main() {
+  v_uv = a_pos * 0.5 + 0.5;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}`;
+
+    const FRAG_SRC = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 frag;
+
+uniform sampler2D u_tex;
+uniform vec4 u_screenRect;          // x0,y0,x1,y1 of Spectrum screen in [0..1]
+uniform vec3 u_stripeColors[16];
+uniform int  u_stripeCount;
+uniform vec2 u_outputSize;          // physical canvas pixels (DPR-scaled)
+uniform float u_enabled;            // master: 1 = CRT pipeline on, 0 = raw passthrough
+uniform float u_curvature;          // 0 = flat,        1 = full barrel
+uniform float u_scanline;           // 0 = no scanlines, 1 = full luma-preserving scanlines
+uniform float u_mask;               // 0 = no aperture,  1 = full RGB stripe mask
+uniform float u_vignette;           // 0 = flat lit,     1 = full corner falloff
+
+vec2 curve(vec2 uv, float strength) {
+  // Per-axis barrel distortion; strength scales how far the corners
+  // pull inward so we can lerp smoothly from flat to fully curved
+  // without ever sampling out of bounds.
+  uv = uv * 2.0 - 1.0;
+  vec2 off = uv.yx * uv.yx;
+  uv += uv * vec2(off.x / 5.0, off.y / 4.0) * strength;
+  return uv * 0.5 + 0.5;
+}
+
+vec3 sampleScreen(vec2 uv) {
+  bool inside = uv.x >= u_screenRect.x && uv.x <= u_screenRect.z
+             && uv.y >= u_screenRect.y && uv.y <= u_screenRect.w;
+  if (inside) {
+    vec2 s = vec2(
+      (uv.x - u_screenRect.x) / (u_screenRect.z - u_screenRect.x),
+      (uv.y - u_screenRect.y) / (u_screenRect.w - u_screenRect.y)
+    );
+    return texture(u_tex, s).rgb;
+  }
+  int count = max(u_stripeCount, 1);
+  int idx = int(floor(uv.y * float(count)));
+  idx = clamp(idx, 0, count - 1);
+  return u_stripeColors[idx];
+}
+
+void main() {
+  vec2 uv = v_uv;
+  if (u_enabled > 0.5 && u_curvature > 0.0) uv = curve(uv, u_curvature);
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+    frag = vec4(0.0, 0.0, 0.0, 1.0);
+    return;
+  }
+
+  vec3 color = sampleScreen(uv);
+
+  if (u_enabled > 0.5) {
+    // Luminance-preserving scanline: bright peaks compensate for dark
+    // troughs so the per-pixel average tracks input luma. Dim pixels
+    // get a softer modulation than bright ones so dark scenes don't
+    // get crushed into invisibility. u_scanline lerps the whole
+    // contribution toward 1.0 (no modulation).
+    float py   = uv.y * u_outputSize.y;
+    float scan = 0.5 + 0.5 * sin(py * 3.14159);
+    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    float strength = mix(0.10, 0.32, 1.0 - luma) * u_scanline;
+    float scanMul = mix(1.0 + strength, 1.0 - strength, scan);
+    color *= scanMul;
+
+    // Aperture mask: three-phosphor stripe with the same averaging
+    // trick — boosted channel + dimmed neighbours roughly sum to the
+    // original colour. u_mask lerps the per-pixel mask back to white.
+    float px = uv.x * u_outputSize.x;
+    int mi = int(mod(px, 3.0));
+    vec3 baseMask;
+    if      (mi == 0) baseMask = vec3(1.15, 0.85, 0.85);
+    else if (mi == 1) baseMask = vec3(0.85, 1.15, 0.85);
+    else              baseMask = vec3(0.85, 0.85, 1.15);
+    color *= mix(vec3(1.0), baseMask, u_mask);
+
+    // Vignette toward the corners; strength lerps toward fully flat.
+    vec2 d = uv * 2.0 - 1.0;
+    float vigBase = clamp(1.0 - dot(d, d) * 0.18, 0.0, 1.0);
+    color *= mix(1.0, vigBase, u_vignette);
+  }
+
+  frag = vec4(color, 1.0);
+}`;
+
+    function compileShader(gl, type, src) {
+      const sh = gl.createShader(type);
+      gl.shaderSource(sh, src);
+      gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+        const log = gl.getShaderInfoLog(sh);
+        gl.deleteShader(sh);
+        throw new Error("shader compile failed: " + log);
+      }
+      return sh;
+    }
+
+    function initWebGL() {
+      const gl = canvas.getContext("webgl2", { antialias: false, premultipliedAlpha: false });
+      if (!gl) return null;
+
+      const vs = compileShader(gl, gl.VERTEX_SHADER, VERT_SRC);
+      const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAG_SRC);
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.bindAttribLocation(prog, 0, "a_pos");
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        throw new Error("program link failed: " + gl.getProgramInfoLog(prog));
+      }
+      gl.useProgram(prog);
+
+      // Full-screen triangle — one draw call covers the whole viewport.
+      const vbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1,  3, -1,  -1, 3,
+      ]), gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+      const tex = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      // The Spectrum framebuffer has top-left origin (matches ImageData);
+      // flip the upload so UV (0,0) is the top of the screen.
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 192, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+      const u = {
+        tex:          gl.getUniformLocation(prog, "u_tex"),
+        screenRect:   gl.getUniformLocation(prog, "u_screenRect"),
+        stripeColors: gl.getUniformLocation(prog, "u_stripeColors"),
+        stripeCount:  gl.getUniformLocation(prog, "u_stripeCount"),
+        outputSize:   gl.getUniformLocation(prog, "u_outputSize"),
+        enabled:      gl.getUniformLocation(prog, "u_enabled"),
+        curvature:    gl.getUniformLocation(prog, "u_curvature"),
+        scanline:     gl.getUniformLocation(prog, "u_scanline"),
+        mask:         gl.getUniformLocation(prog, "u_mask"),
+        vignette:     gl.getUniformLocation(prog, "u_vignette"),
+      };
+      gl.uniform1i(u.tex, 0);
+
+      return { gl, prog, tex, u, screenRect: [0, 0, 1, 1] };
+    }
+
+    function applyCrtFilter() {
+      if (!glCtx) return;
+      const { gl, tex } = glCtx;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      // Sharp nearest-neighbor when CRT is off; linear when on so the
+      // scanline / aperture-mask sampling at sub-texel positions
+      // doesn't expose chunky pixel stair-stepping.
+      const f = crtParams.enabled ? gl.LINEAR : gl.NEAREST;
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
+    }
+
+    function resizeGL() {
+      // Cap DPR at 2 — going higher just costs fragment shader time for
+      // no visible benefit at typical CRT-mask scales.
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = Math.max(1, Math.floor(window.innerWidth * dpr));
+      const h = Math.max(1, Math.floor(window.innerHeight * dpr));
+      if (canvas.width !== w) canvas.width = w;
+      if (canvas.height !== h) canvas.height = h;
+      glCtx.gl.viewport(0, 0, w, h);
+
+      // Spectrum screen fit inside the viewport — same logic as the
+      // legacy CSS path, just expressed in normalized viewport coords.
+      const minMargin = 32 * dpr;
+      const vw = Math.max(1, w - minMargin * 2);
+      const vh = Math.max(1, h - minMargin * 2);
+      const targetAspect = 256 / 192;
+      let cw, ch;
+      if (vw / vh > targetAspect) { ch = vh; cw = ch * targetAspect; }
+      else                        { cw = vw; ch = cw / targetAspect; }
       const scale = Math.max(1, Math.floor(Math.min(vw / 256, vh / 192)));
       if (256 * scale <= vw && 192 * scale <= vh) {
-        cw = 256 * scale;
-        ch = 192 * scale;
+        cw = 256 * scale; ch = 192 * scale;
+      }
+      const x0 = (w - cw) * 0.5;
+      const y0 = (h - ch) * 0.5;
+      glCtx.screenRect = [x0 / w, y0 / h, (x0 + cw) / w, (y0 + ch) / h];
+    }
+
+    // Legacy 2D fallback path: original putImageData renderer with
+    // CSS-painted border. Triggered when WebGL2 isn't available.
+    let ctx2d = null;
+    function initLegacy2D() {
+      document.body.classList.add("legacy-2d");
+      canvas.classList.add("legacy-2d");
+      canvas.width = 256;
+      canvas.height = 192;
+      ctx2d = canvas.getContext("2d");
+      crtBtn.style.display = "none";
+      crtSettingsBtn.style.display = "none";
+      resize2D();
+      window.addEventListener("resize", resize2D);
+    }
+    function resize2D() {
+      const minMargin = 32;
+      const vw = Math.max(0, window.innerWidth  - minMargin * 2);
+      const vh = Math.max(0, window.innerHeight - minMargin * 2);
+      const targetAspect = 256 / 192;
+      let cw, ch;
+      if (vw / vh > targetAspect) { ch = vh; cw = ch * targetAspect; }
+      else                        { cw = vw; ch = cw / targetAspect; }
+      const scale = Math.max(1, Math.floor(Math.min(vw / 256, vh / 192)));
+      if (256 * scale <= vw && 192 * scale <= vh) {
+        cw = 256 * scale; ch = 192 * scale;
       }
       canvas.style.width  = cw + "px";
       canvas.style.height = ch + "px";
     }
-    window.addEventListener("resize", resize);
-    resize();
+
+    let glCtx = null;
+    try { glCtx = initWebGL(); }
+    catch (err) { console.warn("[zxbasic] WebGL init failed", err); }
+    if (glCtx) {
+      applyCrtFilter();
+      resizeGL();
+      window.addEventListener("resize", resizeGL);
+    } else {
+      console.warn("[zxbasic] no WebGL2 — falling back to 2D canvas");
+      initLegacy2D();
+    }
 
     // Single AudioContext shared by both key clicks and BEEP playback,
     // declared up-front so neither helper trips a temporal-dead-zone
@@ -318,39 +780,71 @@
       if (audioCtx) nextBeepTime = audioCtx.currentTime;
     }
 
-    // Spectrum BORDER palette, indices 0..7. Matches
-    // crate::display::spectrum_palette(_, bright=false) — keep these in
-    // sync if the Rust palette changes.
-    const BORDER_PALETTE = [
-      "#000000", "#0000cd", "#cd0000", "#cd00cd",
-      "#00cd00", "#00cdcd", "#cdcd00", "#cdcdcd",
-    ];
+    // Reusable scratch buffer for the shader's stripe palette uniform.
+    // Sized to vec3[16] — the GLSL array length.
+    const stripeUniformBuf = new Float32Array(16 * 3);
 
     function frame() {
       const buf = sys.render();
-      const img = new ImageData(new Uint8ClampedArray(buf), 256, 192);
-      ctx.putImageData(img, 0, 0);
-      // Sync the body background to the BORDER state. If only one (or
-      // zero) BORDER write happened this frame, paint a solid colour;
-      // otherwise stack the writes as equal-height horizontal stripes
-      // — a cheap stand-in for the ULA raster-timing border tricks
-      // that demos used for loading-screen stripes.
+      // Capture BORDER state for this frame. Multiple writes are stacked
+      // as equal-height horizontal stripes (a stand-in for the ULA
+      // raster-timing border tricks demos used for loading screens);
+      // 0 or 1 writes mean a single solid colour.
       const stripes = sys.take_border_stripes();
-      let bg;
-      if (stripes.length >= 2) {
-        const segH = (100 / stripes.length);
-        const stops = [];
-        for (let i = 0; i < stripes.length; i++) {
-          const c = BORDER_PALETTE[stripes[i] & 7];
-          stops.push(`${c} ${(i * segH).toFixed(3)}% ${((i + 1) * segH).toFixed(3)}%`);
+
+      if (glCtx) {
+        const { gl, tex, u, screenRect } = glCtx;
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 192, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+
+        let count;
+        if (stripes.length >= 2) {
+          count = Math.min(stripes.length, 16);
+          for (let i = 0; i < count; i++) {
+            const c = BORDER_PALETTE[stripes[i] & 7];
+            stripeUniformBuf[i * 3]     = c[0];
+            stripeUniformBuf[i * 3 + 1] = c[1];
+            stripeUniformBuf[i * 3 + 2] = c[2];
+          }
+        } else {
+          count = 1;
+          const rgb = sys.border_rgb_packed();
+          stripeUniformBuf[0] = ((rgb >> 16) & 0xff) / 255;
+          stripeUniformBuf[1] = ((rgb >>  8) & 0xff) / 255;
+          stripeUniformBuf[2] = ( rgb        & 0xff) / 255;
         }
-        bg = `linear-gradient(to bottom, ${stops.join(", ")})`;
+
+        gl.uniform4fv(u.screenRect, screenRect);
+        gl.uniform3fv(u.stripeColors, stripeUniformBuf);
+        gl.uniform1i(u.stripeCount, count);
+        gl.uniform2f(u.outputSize, canvas.width, canvas.height);
+        gl.uniform1f(u.enabled,   crtParams.enabled ? 1.0 : 0.0);
+        gl.uniform1f(u.curvature, crtParams.curvature);
+        gl.uniform1f(u.scanline,  crtParams.scanline);
+        gl.uniform1f(u.mask,      crtParams.mask);
+        gl.uniform1f(u.vignette,  crtParams.vignette);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
       } else {
-        const rgb = sys.border_rgb_packed();
-        bg = "#" + rgb.toString(16).padStart(6, "0");
-      }
-      if (document.body.style.background !== bg) {
-        document.body.style.background = bg;
+        // Legacy 2D path.
+        const img = new ImageData(new Uint8ClampedArray(buf), 256, 192);
+        ctx2d.putImageData(img, 0, 0);
+        let bg;
+        if (stripes.length >= 2) {
+          const segH = 100 / stripes.length;
+          const stops = [];
+          for (let i = 0; i < stripes.length; i++) {
+            const c = BORDER_PALETTE_CSS[stripes[i] & 7];
+            stops.push(`${c} ${(i * segH).toFixed(3)}% ${((i + 1) * segH).toFixed(3)}%`);
+          }
+          bg = `linear-gradient(to bottom, ${stops.join(", ")})`;
+        } else {
+          const rgb = sys.border_rgb_packed();
+          bg = "#" + rgb.toString(16).padStart(6, "0");
+        }
+        if (document.body.style.background !== bg) {
+          document.body.style.background = bg;
+        }
       }
       // If RUN was interrupted by BREAK during a BEEP, cut any tones that
       // would otherwise keep playing after the program has stopped.
@@ -428,11 +922,12 @@
     }
 
     document.addEventListener("touchstart", (e) => {
-      // Don't steal focus while the info dialog is open or the user is
-      // tapping the dialog / the i button.
-      if (infoDialog.open) return;
+      // Don't steal focus while a dialog is open or the user is tapping
+      // one of the floating chrome buttons (info / CRT / CRT settings).
+      if (infoDialog.open || crtDialog.open) return;
       const t = e.target;
-      if (t.closest("dialog") || t.closest("#info-btn")) return;
+      if (t.closest("dialog") || t.closest("#info-btn") ||
+          t.closest("#crt-btn") || t.closest("#crt-settings-btn")) return;
       // Prevent the synthetic mouseclick + double-tap zoom on iOS.
       e.preventDefault();
       focusMobileKeyboard();
@@ -508,9 +1003,10 @@
 
     // Keyboard goes to the document so users don't have to click the canvas.
     document.addEventListener("keydown", (e) => {
-      // When the info dialog is open let its native handling take over —
-      // Esc should close it, not BREAK the BASIC runtime.
-      if (infoDialog.open) return;
+      // When a dialog is open let its native handling take over — Esc
+      // should close it (not BREAK the BASIC runtime) and arrow keys
+      // should drive the focused slider rather than command history.
+      if (infoDialog.open || crtDialog.open) return;
       // Don't swallow modifier combos like Cmd/Ctrl+V — let the paste event
       // through.
       if (e.metaKey || e.ctrlKey) return;

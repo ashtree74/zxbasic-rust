@@ -346,6 +346,7 @@
           <option value="3">Wide grille</option>
           <option value="4">Wide soft grille</option>
           <option value="5">Slot mask</option>
+          <option value="6">Classic stripe</option>
         </select>
       </label>
       <label class="crt-row">
@@ -357,6 +358,21 @@
         <span>Chromatic aberration</span>
         <input type="range" id="crt-colorOffset" min="0" max="100" value="30">
         <output for="crt-colorOffset">30</output>
+      </label>
+      <label class="crt-row">
+        <span>Scanlines</span>
+        <input type="range" id="crt-scanline" min="0" max="100" value="0">
+        <output for="crt-scanline">0</output>
+      </label>
+      <label class="crt-row">
+        <span>Vignette</span>
+        <input type="range" id="crt-vignette" min="0" max="100" value="0">
+        <output for="crt-vignette">0</output>
+      </label>
+      <label class="crt-row">
+        <span>Glow</span>
+        <input type="range" id="crt-glow" min="0" max="100" value="0">
+        <output for="crt-glow">0</output>
       </label>
       <div class="actions">
         <button id="crt-reset" type="button">Reset</button>
@@ -417,9 +433,12 @@
       corners: 0.11,           // → bezel radius 0..0.12
       colorOffset: 0.30,       // → chromatic-aberration offset 0..0.5
       maskBrightness: 1.0,     // 1.0 = full brightness, lower preserves mask in highlights
-      maskType: 2,             // 0=Off, 1=Dots, 2=Aperture, 3=Wide, 4=WideSoft, 5=Slot
+      maskType: 2,             // 0=Off, 1=Dots, 2=Aperture, 3=Wide, 4=WideSoft, 5=Slot, 6=Classic
+      scanline: 0,             // off by default; carryover effect from our older shader
+      vignette: 0,             // off by default; carryover
+      glow: 0,                 // off by default; new highlight-bloom approximation
     });
-    const MASK_TYPE_MAX = 5;
+    const MASK_TYPE_MAX = 6;
     const CRT_STORAGE_KEY = "crt-params";
     function clamp01(v) { return Math.max(0, Math.min(1, +v || 0)); }
     function loadCrtParams() {
@@ -439,6 +458,9 @@
         colorOffset:    clamp01(src.colorOffset),
         maskBrightness: clamp01(src.maskBrightness),
         maskType:       Number.isFinite(mt) ? Math.max(0, Math.min(MASK_TYPE_MAX, mt)) : CRT_DEFAULTS.maskType,
+        scanline:       clamp01(src.scanline),
+        vignette:       clamp01(src.vignette),
+        glow:           clamp01(src.glow),
       };
     }
     const crtParams = loadCrtParams();
@@ -480,7 +502,7 @@
     const crtSettingsBtn = document.getElementById("crt-settings-btn");
     const crtCloseBtn = document.getElementById("crt-dialog-close");
     const crtResetBtn = document.getElementById("crt-reset");
-    const sliderKeys = ["curvature", "corners", "colorOffset", "maskBrightness"];
+    const sliderKeys = ["curvature", "corners", "colorOffset", "maskBrightness", "scanline", "vignette", "glow"];
     const sliders = {};
     for (const k of sliderKeys) {
       const input = document.getElementById("crt-" + k);
@@ -528,6 +550,9 @@
       crtParams.colorOffset    = CRT_DEFAULTS.colorOffset;
       crtParams.maskBrightness = CRT_DEFAULTS.maskBrightness;
       crtParams.maskType       = CRT_DEFAULTS.maskType;
+      crtParams.scanline       = CRT_DEFAULTS.scanline;
+      crtParams.vignette       = CRT_DEFAULTS.vignette;
+      crtParams.glow           = CRT_DEFAULTS.glow;
       syncSlidersFromState();
       saveCrtParams();
     });
@@ -577,7 +602,10 @@ uniform float u_curvature;          // 0..1 → curve 0..0.5
 uniform float u_corners;            // 0..1 → bezel radius 0..0.12
 uniform float u_colorOffset;        // 0..1 → color_offset 0..0.5 (chromatic aberration)
 uniform float u_maskBrightness;     // 0..1
-uniform int   u_maskType;           // 0=off, 1=Dots, 2=Aperture, 3=WideGrille, 4=WideSoftGrille, 5=Slot
+uniform int   u_maskType;           // 0=off, 1=Dots, 2=Aperture, 3=WideGrille, 4=WideSoftGrille, 5=Slot, 6=Classic
+uniform float u_scanline;           // 0..1 — luminance-preserving horizontal scanline modulation
+uniform float u_vignette;           // 0..1 — corner falloff
+uniform float u_glow;               // 0..1 — highlight bloom approximation
 
 vec3 srgb_to_linear(vec3 col) {
   return mix(pow((col + 0.055) / 1.055, vec3(2.4)), col / 12.92, lessThan(col, vec3(0.04045)));
@@ -677,12 +705,24 @@ vec4 generate_mask(vec2 fc) {
       (idx == 12) ? vec3(1,0,0) : (idx == 13) ? vec3(0,0,0) : (idx == 14) ? vec3(0,0,1) :                vec3(0,1,0);
     return vec4(c, 0.375);
   }
+  if (u_maskType == 6) {           // Classic stripe — soft +/-15% per-channel modulation,
+    int mi = int(mod(fc.x, 3.0));  // signalled by m.w = 1.0 so apply_mask uses the
+    vec3 c = (mi == 0) ? vec3(1.15, 0.85, 0.85)  // pre-multiply branch instead of the
+           : (mi == 1) ? vec3(0.85, 1.15, 0.85)  // luma-preserving aperture math.
+                       : vec3(0.85, 0.85, 1.15);
+    return vec4(c, 1.0);
+  }
   return vec4(0.5);                // 0 = Off — identity pass through apply_mask
 }
 
 // Phosphor-mask application with overflow spill for highlight preservation.
+// Classic stripe (m.w == 1.0) is just a per-channel brightness modulation —
+// the aperture-mask math divides by 0 in that regime, so we branch out.
 vec3 apply_mask(vec3 col, vec2 fc) {
   vec4 m = generate_mask(fc);
+  if (m.w >= 1.0) {
+    return col * mix(vec3(1.0), m.rgb, u_maskBrightness);
+  }
   col *= mix(m.w, 1.0, u_maskBrightness);
   vec3 target = col / m.w;
   vec3 primary = clamp(target, 0.0, 1.0);
@@ -741,7 +781,38 @@ void main() {
     linearCol = srgb_to_linear(u_stripeColors[idx]);
   }
 
+  // Highlight glow — cheap single-pass bloom approximation. Boosts
+  // bright pixels before the mask so the spillover spreads naturally
+  // through the phosphor grille. Reads as a soft phosphor halo on
+  // brights without needing a separable blur pass.
+  if (u_glow > 0.0) {
+    float lumaPre = dot(linearCol, vec3(0.2126, 0.7152, 0.0722));
+    float halo = smoothstep(0.4, 1.0, lumaPre) * u_glow * 0.6;
+    linearCol *= 1.0 + halo;
+  }
+
   linearCol = apply_mask(linearCol, gl_FragCoord.xy);
+
+  // Luminance-preserving scanlines (carried over from our previous
+  // pipeline). Bright peaks compensate for dark troughs so per-pixel
+  // average tracks input luma; dim pixels get a softer modulation so
+  // dark scenes stay readable.
+  if (u_scanline > 0.0) {
+    float py = gl_FragCoord.y;
+    float scan = 0.5 + 0.5 * sin(py * 3.14159);
+    float luma = dot(linearCol, vec3(0.2126, 0.7152, 0.0722));
+    float strength = mix(0.10, 0.32, 1.0 - luma) * u_scanline;
+    float scanMul = mix(1.0 + strength, 1.0 - strength, scan);
+    linearCol *= scanMul;
+  }
+
+  // Vignette in unit-canvas space.
+  if (u_vignette > 0.0) {
+    vec2 d = uv * 2.0 - 1.0;
+    float vigBase = clamp(1.0 - dot(d, d) * 0.18, 0.0, 1.0);
+    linearCol *= mix(1.0, vigBase, u_vignette);
+  }
+
   vec3 srgb = linear_to_srgb(linearCol);
   frag = vec4(srgb * bezelMask, 1.0);
 }`;
@@ -805,6 +876,9 @@ void main() {
         colorOffset:    gl.getUniformLocation(prog, "u_colorOffset"),
         maskBrightness: gl.getUniformLocation(prog, "u_maskBrightness"),
         maskType:       gl.getUniformLocation(prog, "u_maskType"),
+        scanline:       gl.getUniformLocation(prog, "u_scanline"),
+        vignette:       gl.getUniformLocation(prog, "u_vignette"),
+        glow:           gl.getUniformLocation(prog, "u_glow"),
       };
       gl.uniform1i(u.tex, 0);
 
@@ -1004,6 +1078,9 @@ void main() {
         gl.uniform1f(u.colorOffset,    crtParams.colorOffset);
         gl.uniform1f(u.maskBrightness, crtParams.maskBrightness);
         gl.uniform1i(u.maskType,       crtParams.maskType | 0);
+        gl.uniform1f(u.scanline,       crtParams.scanline);
+        gl.uniform1f(u.vignette,       crtParams.vignette);
+        gl.uniform1f(u.glow,           crtParams.glow);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
       } else {
         // Legacy 2D path.

@@ -375,8 +375,8 @@
       <div class="crt-section">Image</div>
       <label class="crt-row">
         <span>Brightness</span>
-        <input type="range" id="crt-brightness" min="0" max="100" value="50">
-        <output for="crt-brightness">50</output>
+        <input type="range" id="crt-brightness" min="0" max="100" value="42">
+        <output for="crt-brightness">42</output>
       </label>
       <label class="crt-row">
         <span>Contrast</span>
@@ -406,18 +406,18 @@
       </label>
       <label class="crt-row">
         <span>Corner radius</span>
-        <input type="range" id="crt-corners" min="0" max="100" value="11">
-        <output for="crt-corners">11</output>
+        <input type="range" id="crt-corners" min="0" max="100" value="13">
+        <output for="crt-corners">13</output>
       </label>
       <label class="crt-row">
         <span>Vignette</span>
-        <input type="range" id="crt-vignette" min="0" max="100" value="100">
-        <output for="crt-vignette">100</output>
+        <input type="range" id="crt-vignette" min="0" max="100" value="76">
+        <output for="crt-vignette">76</output>
       </label>
       <label class="crt-row">
         <span>Ambient light</span>
-        <input type="range" id="crt-ambient" min="0" max="100" value="25">
-        <output for="crt-ambient">25</output>
+        <input type="range" id="crt-ambient" min="0" max="100" value="0">
+        <output for="crt-ambient">0</output>
       </label>
 
       <div class="crt-section">Rasterization</div>
@@ -437,8 +437,8 @@
       </label>
       <label class="crt-row">
         <span>Aperture mask</span>
-        <input type="range" id="crt-mask" min="0" max="100" value="100">
-        <output for="crt-mask">100</output>
+        <input type="range" id="crt-mask" min="0" max="100" value="76">
+        <output for="crt-mask">76</output>
       </label>
       <label class="crt-row">
         <span>Mask scale</span>
@@ -449,23 +449,23 @@
       <div class="crt-section">Analog artifacts</div>
       <label class="crt-row">
         <span>Glow</span>
-        <input type="range" id="crt-glow" min="0" max="100" value="100">
-        <output for="crt-glow">100</output>
+        <input type="range" id="crt-glow" min="0" max="100" value="97">
+        <output for="crt-glow">97</output>
       </label>
       <label class="crt-row">
         <span>Chromatic ab.</span>
-        <input type="range" id="crt-colorOffset" min="0" max="100" value="44">
-        <output for="crt-colorOffset">44</output>
+        <input type="range" id="crt-colorOffset" min="0" max="100" value="54">
+        <output for="crt-colorOffset">54</output>
       </label>
       <label class="crt-row">
         <span>Burn-in</span>
-        <input type="range" id="crt-burnIn" min="0" max="100" value="25">
-        <output for="crt-burnIn">25</output>
+        <input type="range" id="crt-burnIn" min="0" max="100" value="14">
+        <output for="crt-burnIn">14</output>
       </label>
       <label class="crt-row">
         <span>Static noise</span>
-        <input type="range" id="crt-staticNoise" min="0" max="100" value="8">
-        <output for="crt-staticNoise">8</output>
+        <input type="range" id="crt-staticNoise" min="0" max="100" value="79">
+        <output for="crt-staticNoise">79</output>
       </label>
       <label class="crt-row">
         <span>Flicker</span>
@@ -484,8 +484,8 @@
       </label>
       <label class="crt-row">
         <span>Glow line</span>
-        <input type="range" id="crt-glowLine" min="0" max="100" value="20">
-        <output for="crt-glowLine">20</output>
+        <input type="range" id="crt-glowLine" min="0" max="100" value="8">
+        <output for="crt-glowLine">8</output>
       </label>
 
       <div class="actions">
@@ -545,29 +545,29 @@
       enabled: true,
       profile: "spectrum",
       curvature: 0.22,
-      corners: 0.11,
-      vignette: 1.0,
-      ambient: 0.25,
-      brightness: 0.50,
+      corners: 0.13,
+      vignette: 0.76,
+      ambient: 0.0,
+      brightness: 0.42,
       contrast: 0.50,
       tintColor: "#ffffff",
       tintStrength: 0.0,
       colorBleed: 0.0,
       rasterMode: "subpixel",
       scanline: 1.0,
-      mask: 1.0,
+      mask: 0.76,
       maskScale: 3,
-      glow: 1.0,
-      colorOffset: 0.44,
-      burnIn: 0.25,
-      staticNoise: 0.08,
+      glow: 0.97,
+      colorOffset: 0.54,
+      burnIn: 0.14,
+      staticNoise: 0.79,
       flicker: 0.10,
       jitter: 0.15,
       hSync: 0.06,
-      glowLine: 0.20,
+      glowLine: 0.08,
     });
     const CRT_PROFILES = Object.freeze({
-      spectrum: { tintColor: "#ffffff", tintStrength: 0.0, brightness: 0.50, contrast: 0.50 },
+      spectrum: { tintColor: "#ffffff", tintStrength: 0.0, brightness: 0.42, contrast: 0.50 },
       amber:    { tintColor: "#ffb000", tintStrength: 0.95, brightness: 0.55, contrast: 0.55 },
       green:    { tintColor: "#33ff66", tintStrength: 0.95, brightness: 0.50, contrast: 0.55 },
       apple2:   { tintColor: "#33ff33", tintStrength: 1.00, brightness: 0.50, contrast: 0.55 },

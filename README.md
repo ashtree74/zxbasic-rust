@@ -179,6 +179,8 @@ The Z80 source used as a specification is [`cheveron/zxrom`](https://github.com/
 
 The CRT shader pipeline borrows from two public-domain Godot shaders by Harrison Allen — "CRT with luminance preservation" and the "no scanlines" variant — for the radial barrel warp, the sRGB-linear mask math, the three-tap subpixel reconstruction with per-channel beam offsets, and the catalogue of phosphor patterns (Dots, Aperture, Wide, Wide Soft, Slot). The screen-rect layout, the BORDER stripe rendering, the rounded bezel, the master toggle, and the settings UI on top are ours.
 
+The wider analog-CRT feel — burn-in phosphor trail, static noise, screen flicker, jitter, horizontal-sync wobble, ambient halation, the curated monochrome phosphor profiles (Amber, Green, Apple ][, IBM CGA, Vintage), and the rasterization-pattern picker — is modelled on Swordfish90's cool-retro-term, the QML/GLSL terminal that set the bar for this look. Our implementation is a from-scratch WebGL2 port of those ideas; nothing is copied verbatim.
+
 ## License
 
 The Rust source in this repository is dual MIT / Apache‑2.0. Data tables extracted from `vendor/zxrom` (the 96‑glyph font, eventually the keyword and key‑map tables) inherit the upstream CC BY‑SA 4.0 licence.

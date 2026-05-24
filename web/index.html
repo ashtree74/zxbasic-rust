@@ -349,8 +349,8 @@
       </label>
       <label class="crt-row">
         <span>Mask scale</span>
-        <input type="range" id="crt-maskScale" min="1" max="6" value="2" step="1">
-        <output for="crt-maskScale">2</output>
+        <input type="range" id="crt-maskScale" min="1" max="6" value="3" step="1">
+        <output for="crt-maskScale">3</output>
       </label>
       <label class="crt-row">
         <span>Vignette</span>
@@ -359,13 +359,13 @@
       </label>
       <label class="crt-row">
         <span>Glow</span>
-        <input type="range" id="crt-glow" min="0" max="100" value="30">
-        <output for="crt-glow">30</output>
+        <input type="range" id="crt-glow" min="0" max="100" value="100">
+        <output for="crt-glow">100</output>
       </label>
       <label class="crt-row">
         <span>Chromatic aberration</span>
-        <input type="range" id="crt-colorOffset" min="0" max="100" value="30">
-        <output for="crt-colorOffset">30</output>
+        <input type="range" id="crt-colorOffset" min="0" max="100" value="44">
+        <output for="crt-colorOffset">44</output>
       </label>
       <div class="actions">
         <button id="crt-reset" type="button">Reset</button>
@@ -427,9 +427,9 @@
       scanline: 1.0,
       mask: 1.0,
       vignette: 1.0,
-      glow: 0.30,
-      colorOffset: 0.30,
-      maskScale: 2,            // physical pixels per mask cell (integer 1..MASK_SCALE_MAX)
+      glow: 1.0,
+      colorOffset: 0.44,
+      maskScale: 3,            // physical pixels per mask cell (integer 1..MASK_SCALE_MAX)
     });
     const MASK_SCALE_MIN = 1;
     const MASK_SCALE_MAX = 6;

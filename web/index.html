@@ -337,37 +337,20 @@
         <input type="range" id="crt-corners" min="0" max="100" value="11">
         <output for="crt-corners">11</output>
       </label>
-      <label class="crt-row crt-row-select">
-        <span>Mask type</span>
-        <select id="crt-mask-type">
-          <option value="0">Off</option>
-          <option value="1">Dots</option>
-          <option value="2">Aperture grille</option>
-          <option value="3">Wide grille</option>
-          <option value="4">Wide soft grille</option>
-          <option value="5">Slot mask</option>
-          <option value="6" selected>Classic stripe</option>
-        </select>
+      <label class="crt-row">
+        <span>Scanlines</span>
+        <input type="range" id="crt-scanline" min="0" max="100" value="100">
+        <output for="crt-scanline">100</output>
+      </label>
+      <label class="crt-row">
+        <span>Aperture mask</span>
+        <input type="range" id="crt-mask" min="0" max="100" value="100">
+        <output for="crt-mask">100</output>
       </label>
       <label class="crt-row">
         <span>Mask scale</span>
         <input type="range" id="crt-maskScale" min="1" max="6" value="2" step="1">
         <output for="crt-maskScale">2</output>
-      </label>
-      <label class="crt-row">
-        <span>Mask brightness</span>
-        <input type="range" id="crt-maskBrightness" min="0" max="100" value="100">
-        <output for="crt-maskBrightness">100</output>
-      </label>
-      <label class="crt-row">
-        <span>Chromatic aberration</span>
-        <input type="range" id="crt-colorOffset" min="0" max="100" value="87">
-        <output for="crt-colorOffset">87</output>
-      </label>
-      <label class="crt-row">
-        <span>Scanlines</span>
-        <input type="range" id="crt-scanline" min="0" max="100" value="100">
-        <output for="crt-scanline">100</output>
       </label>
       <label class="crt-row">
         <span>Vignette</span>
@@ -376,8 +359,13 @@
       </label>
       <label class="crt-row">
         <span>Glow</span>
-        <input type="range" id="crt-glow" min="0" max="100" value="100">
-        <output for="crt-glow">100</output>
+        <input type="range" id="crt-glow" min="0" max="100" value="30">
+        <output for="crt-glow">30</output>
+      </label>
+      <label class="crt-row">
+        <span>Chromatic aberration</span>
+        <input type="range" id="crt-colorOffset" min="0" max="100" value="30">
+        <output for="crt-colorOffset">30</output>
       </label>
       <div class="actions">
         <button id="crt-reset" type="button">Reset</button>
@@ -436,15 +424,13 @@
       enabled: true,
       curvature: 0.22,
       corners: 0.11,
-      colorOffset: 0.87,
-      maskBrightness: 1.0,
-      maskType: 6,             // Classic stripe (matches the curated default look)
       scanline: 1.0,
+      mask: 1.0,
       vignette: 1.0,
-      glow: 1.0,
+      glow: 0.30,
+      colorOffset: 0.30,
       maskScale: 2,            // physical pixels per mask cell (integer 1..MASK_SCALE_MAX)
     });
-    const MASK_TYPE_MAX = 6;
     const MASK_SCALE_MIN = 1;
     const MASK_SCALE_MAX = 6;
     const CRT_STORAGE_KEY = "crt-params";
@@ -458,19 +444,17 @@
       try { stored = JSON.parse(localStorage.getItem(CRT_STORAGE_KEY) || "{}") || {}; }
       catch { /* keep defaults */ }
       const src = { ...CRT_DEFAULTS, ...migrated, ...stored };
-      const mt = Math.round(+src.maskType);
       const ms = Math.round(+src.maskScale);
       return {
-        enabled:        !!src.enabled,
-        curvature:      clamp01(src.curvature),
-        corners:        clamp01(src.corners),
-        colorOffset:    clamp01(src.colorOffset),
-        maskBrightness: clamp01(src.maskBrightness),
-        maskType:       Number.isFinite(mt) ? Math.max(0, Math.min(MASK_TYPE_MAX, mt)) : CRT_DEFAULTS.maskType,
-        scanline:       clamp01(src.scanline),
-        vignette:       clamp01(src.vignette),
-        glow:           clamp01(src.glow),
-        maskScale:      Number.isFinite(ms) ? Math.max(MASK_SCALE_MIN, Math.min(MASK_SCALE_MAX, ms)) : CRT_DEFAULTS.maskScale,
+        enabled:     !!src.enabled,
+        curvature:   clamp01(src.curvature),
+        corners:     clamp01(src.corners),
+        scanline:    clamp01(src.scanline),
+        mask:        clamp01(src.mask),
+        vignette:    clamp01(src.vignette),
+        glow:        clamp01(src.glow),
+        colorOffset: clamp01(src.colorOffset),
+        maskScale:   Number.isFinite(ms) ? Math.max(MASK_SCALE_MIN, Math.min(MASK_SCALE_MAX, ms)) : CRT_DEFAULTS.maskScale,
       };
     }
     const crtParams = loadCrtParams();
@@ -512,7 +496,7 @@
     const crtSettingsBtn = document.getElementById("crt-settings-btn");
     const crtCloseBtn = document.getElementById("crt-dialog-close");
     const crtResetBtn = document.getElementById("crt-reset");
-    const sliderKeys = ["curvature", "corners", "colorOffset", "maskBrightness", "scanline", "vignette", "glow"];
+    const sliderKeys = ["curvature", "corners", "scanline", "mask", "vignette", "glow", "colorOffset"];
     const sliders = {};
     for (const k of sliderKeys) {
       const input = document.getElementById("crt-" + k);
@@ -524,12 +508,6 @@
         saveCrtParams();
       });
     }
-    const maskSelect = document.getElementById("crt-mask-type");
-    maskSelect.addEventListener("change", () => {
-      const v = parseInt(maskSelect.value, 10);
-      crtParams.maskType = Number.isFinite(v) ? Math.max(0, Math.min(MASK_TYPE_MAX, v)) : CRT_DEFAULTS.maskType;
-      saveCrtParams();
-    });
     // Mask scale is an integer slider (1..N px per cell), not a 0..100
     // strength, so it doesn't share the generic slider wiring above.
     const maskScaleInput = document.getElementById("crt-maskScale");
@@ -548,7 +526,6 @@
         sliders[k].input.value = v;
         sliders[k].output.textContent = v;
       }
-      maskSelect.value = String(crtParams.maskType);
       maskScaleInput.value = String(crtParams.maskScale);
       maskScaleOutput.textContent = String(crtParams.maskScale);
     }
@@ -569,15 +546,14 @@
     });
     crtDialog.addEventListener("close", () => { canvas.focus(); });
     crtResetBtn.addEventListener("click", () => {
-      crtParams.curvature      = CRT_DEFAULTS.curvature;
-      crtParams.corners        = CRT_DEFAULTS.corners;
-      crtParams.colorOffset    = CRT_DEFAULTS.colorOffset;
-      crtParams.maskBrightness = CRT_DEFAULTS.maskBrightness;
-      crtParams.maskType       = CRT_DEFAULTS.maskType;
-      crtParams.scanline       = CRT_DEFAULTS.scanline;
-      crtParams.vignette       = CRT_DEFAULTS.vignette;
-      crtParams.glow           = CRT_DEFAULTS.glow;
-      crtParams.maskScale      = CRT_DEFAULTS.maskScale;
+      crtParams.curvature   = CRT_DEFAULTS.curvature;
+      crtParams.corners     = CRT_DEFAULTS.corners;
+      crtParams.scanline    = CRT_DEFAULTS.scanline;
+      crtParams.mask        = CRT_DEFAULTS.mask;
+      crtParams.vignette    = CRT_DEFAULTS.vignette;
+      crtParams.glow        = CRT_DEFAULTS.glow;
+      crtParams.colorOffset = CRT_DEFAULTS.colorOffset;
+      crtParams.maskScale   = CRT_DEFAULTS.maskScale;
       syncSlidersFromState();
       saveCrtParams();
     });
@@ -598,20 +574,14 @@ void main() {
   gl_Position = vec4(a_pos, 0.0, 1.0);
 }`;
 
-    // Port of Harrison Allen's "CRT with Luminance Preservation (no
-    // scanlines)" (public domain, godotshaders.com). Key pieces:
-    //   * radial barrel warp with aspect compensation
-    //   * sRGB <-> linear so the mask math averages in light-linear space
-    //   * 3-tap horizontal subpixel reconstruction with per-channel beam
-    //     offsets (chromatic aberration)
-    //   * smoothstep'd row interpolation between two scan rows (gives a
-    //     soft inter-scanline blend rather than visible scan stripes)
-    //   * five selectable phosphor-mask patterns (Dots, Aperture Grille,
-    //     Wide Grille, Wide Soft Grille, Slot Mask) plus an Off setting
-    //   * mask brightness control that preserves highlights by spilling
-    //     overflow into adjacent subpixels
-    // Our additions on top: BORDER stripe area outside the Spectrum
-    // screen rect, and a rounded-rect bezel mask for the curved face.
+    // Original in-house CRT pipeline (per-axis barrel warp, luminance-
+    // preserving scanlines, 3-pixel RGB stripe aperture mask, vignette,
+    // rounded bezel) with three carry-over additions on top: chromatic
+    // aberration on the texture sample, a single-pass highlight glow,
+    // and a mask-scale slider so the user picks how chunky the phosphor
+    // pattern reads. The mask deliberately samples in warped-uv space so
+    // it bends along the curvature, which we'd lost when porting the
+    // gl_FragCoord-based Harrison Allen shader.
     const FRAG_SRC = `#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -621,153 +591,59 @@ uniform sampler2D u_tex;            // 256x192 Spectrum screen
 uniform vec4  u_screenRect;         // x0,y0,x1,y1 of Spectrum screen in viewport [0..1]
 uniform vec3  u_stripeColors[16];
 uniform int   u_stripeCount;
-uniform float u_aspect;             // canvas height / width — keeps warp radial
+uniform vec2  u_outputSize;         // physical canvas pixels (DPR-scaled) — mask sampling
 uniform float u_enabled;            // master: 1 = CRT pipeline on, 0 = raw passthrough
-uniform float u_curvature;          // 0..1 → curve 0..0.5
-uniform float u_corners;            // 0..1 → bezel radius 0..0.12
-uniform float u_colorOffset;        // 0..1 → color_offset 0..0.5 (chromatic aberration)
-uniform float u_maskBrightness;     // 0..1
-uniform int   u_maskType;           // 0=off, 1=Dots, 2=Aperture, 3=WideGrille, 4=WideSoftGrille, 5=Slot, 6=Classic
+uniform float u_curvature;          // 0 = flat, 1 = full barrel
+uniform float u_corners;            // 0 = sharp, 1 = fully rounded CRT bezel
 uniform float u_scanline;           // 0..1 — luminance-preserving horizontal scanline modulation
+uniform float u_mask;               // 0..1 — RGB stripe aperture-mask strength
 uniform float u_vignette;           // 0..1 — corner falloff
 uniform float u_glow;               // 0..1 — highlight bloom approximation
+uniform float u_colorOffset;        // 0..1 — chromatic-aberration offset on R/B channels
 uniform float u_maskScale;          // physical pixels per mask cell (>= 1; integer in practice)
 
-vec3 srgb_to_linear(vec3 col) {
-  return mix(pow((col + 0.055) / 1.055, vec3(2.4)), col / 12.92, lessThan(col, vec3(0.04045)));
-}
-vec3 linear_to_srgb(vec3 col) {
-  return mix((pow(col, vec3(1.0 / 2.4)) * 1.055) - 0.055, col * 12.92, lessThan(col, vec3(0.0031318)));
-}
-
-vec2 warp(vec2 uv, float aspect, float curve) {
-  uv -= 0.5;
-  uv.x /= aspect;
-  float w = dot(uv, uv) * curve - curve * 0.25;
-  uv /= 1.0 - w;
-  uv.x *= aspect;
-  return uv + 0.5;
+vec2 curve(vec2 uv, float strength) {
+  // Per-axis barrel distortion; strength scales how far the corners
+  // pull inward, so the slider lerps smoothly from flat to fully
+  // curved without sampling outside the texture.
+  uv = uv * 2.0 - 1.0;
+  vec2 off = uv.yx * uv.yx;
+  uv += uv * vec2(off.x / 5.0, off.y / 4.0) * strength;
+  return uv * 0.5 + 0.5;
 }
 
-// 3x2 subpixel sample with per-channel beam offset (chromatic aberration).
-// Input uv is in [0..1] of u_tex (i.e. of the Spectrum 256x192 screen).
-vec3 sampleScreen(vec2 uv, float colorOffset) {
-  ivec2 sz = textureSize(u_tex, 0);
-  vec2 puv = uv * vec2(sz);
-
-  int yU = int(puv.y + 0.5) - 1;
-  int yL = yU + 1;
-  float x = floor(puv.x);
-  float ax = x - 1.0;
-  float dx = x + 1.0;
-
-  int xa = clamp(int(ax), 0, sz.x - 1);
-  int xb = clamp(int(x),  0, sz.x - 1);
-  int xc = clamp(int(dx), 0, sz.x - 1);
-  int yu = clamp(yU, 0, sz.y - 1);
-  int yl = clamp(yL, 0, sz.y - 1);
-
-  vec3 ua = srgb_to_linear(texelFetch(u_tex, ivec2(xa, yu), 0).rgb);
-  vec3 ub = srgb_to_linear(texelFetch(u_tex, ivec2(xb, yu), 0).rgb);
-  vec3 uc = srgb_to_linear(texelFetch(u_tex, ivec2(xc, yu), 0).rgb);
-  vec3 la = srgb_to_linear(texelFetch(u_tex, ivec2(xa, yl), 0).rgb);
-  vec3 lb = srgb_to_linear(texelFetch(u_tex, ivec2(xb, yl), 0).rgb);
-  vec3 lc = srgb_to_linear(texelFetch(u_tex, ivec2(xc, yl), 0).rgb);
-
-  vec3 beam = vec3(puv.x - 0.5);
-  beam.r -= colorOffset;
-  beam.b += colorOffset;
-
-  vec3 wa = smoothstep(vec3(1.0), vec3(0.0), beam - ax);
-  vec3 wb = smoothstep(vec3(1.0), vec3(0.0), abs(beam - x));
-  vec3 wc = smoothstep(vec3(1.0), vec3(0.0), dx - beam);
-
-  vec3 upper = ua * wa + ub * wb + uc * wc;
-  vec3 lower = la * wa + lb * wb + lc * wc;
-
-  float sawtooth = smoothstep(0.0, 1.0, (puv.y + 0.5) - float(yU));
-  return mix(upper, lower, sawtooth);
+// Texture sample with chromatic aberration: shift R and B in opposite
+// directions along texture-x by ~colorOffset texels. G stays put.
+vec3 sampleTex(vec2 specUV) {
+  vec2 texSize = vec2(textureSize(u_tex, 0));
+  float dx = u_colorOffset * 2.0 / texSize.x;
+  float r = texture(u_tex, vec2(specUV.x - dx, specUV.y)).r;
+  float g = texture(u_tex, specUV).g;
+  float b = texture(u_tex, vec2(specUV.x + dx, specUV.y)).b;
+  return vec3(r, g, b);
 }
 
-// Returns rgb mask weights and average brightness (.w) for the selected pattern.
-// fc is gl_FragCoord; we divide by u_maskScale so each "cell" of the pattern
-// covers maskScale physical pixels instead of being locked to 1:1.
-vec4 generate_mask(vec2 fc) {
-  vec2 cell = floor(fc / max(u_maskScale, 1.0));
-  if (u_maskType == 1) {           // Dots — 2x2 R/G/B/black
-    ivec2 ic = ivec2(cell);
-    int idx = (ic.y * 2 + ic.x) & 3;
-    vec3 c = (idx == 0) ? vec3(1,0,0)
-           : (idx == 1) ? vec3(0,1,0)
-           : (idx == 2) ? vec3(0,0,1)
-                        : vec3(0,0,0);
-    return vec4(c, 0.25);
+vec3 sampleScreen(vec2 uv) {
+  bool inside = uv.x >= u_screenRect.x && uv.x <= u_screenRect.z
+             && uv.y >= u_screenRect.y && uv.y <= u_screenRect.w;
+  if (inside) {
+    vec2 s = vec2(
+      (uv.x - u_screenRect.x) / (u_screenRect.z - u_screenRect.x),
+      (uv.y - u_screenRect.y) / (u_screenRect.w - u_screenRect.y)
+    );
+    return sampleTex(s);
   }
-  if (u_maskType == 2) {           // Aperture Grille — alternating G / R+B columns
-    int idx = int(mod(cell.x, 2.0));
-    return vec4(idx == 0 ? vec3(0,1,0) : vec3(1,0,1), 0.5);
-  }
-  if (u_maskType == 3) {           // Wide Grille — 4-wide R/G/B/black columns
-    int idx = int(mod(cell.x, 4.0));
-    vec3 c = (idx == 0) ? vec3(1,0,0)
-           : (idx == 1) ? vec3(0,1,0)
-           : (idx == 2) ? vec3(0,0,1)
-                        : vec3(0,0,0);
-    return vec4(c, 0.25);
-  }
-  if (u_maskType == 4) {           // Wide Soft Grille — 4-wide with leak
-    int idx = int(mod(cell.x, 4.0));
-    vec3 c = (idx == 0) ? vec3(1.0, 0.125, 0.0)
-           : (idx == 1) ? vec3(0.125, 1.0, 0.125)
-           : (idx == 2) ? vec3(0.0, 0.125, 1.0)
-                        : vec3(0.125, 0.0, 0.125);
-    return vec4(c, 0.3125);
-  }
-  if (u_maskType == 5) {           // Slot Mask — 4x4 staggered pattern
-    int ix = int(mod(cell.x, 4.0));
-    int iy = int(mod(cell.y, 4.0));
-    int idx = iy * 4 + ix;
-    vec3 c =
-      (idx ==  0) ? vec3(1,0,1) : (idx ==  1) ? vec3(0,1,0) : (idx ==  2) ? vec3(1,0,1) : (idx ==  3) ? vec3(0,1,0) :
-      (idx ==  4) ? vec3(0,0,1) : (idx ==  5) ? vec3(0,1,0) : (idx ==  6) ? vec3(1,0,0) : (idx ==  7) ? vec3(0,0,0) :
-      (idx ==  8) ? vec3(1,0,1) : (idx ==  9) ? vec3(0,1,0) : (idx == 10) ? vec3(1,0,1) : (idx == 11) ? vec3(0,1,0) :
-      (idx == 12) ? vec3(1,0,0) : (idx == 13) ? vec3(0,0,0) : (idx == 14) ? vec3(0,0,1) :                vec3(0,1,0);
-    return vec4(c, 0.375);
-  }
-  if (u_maskType == 6) {           // Classic stripe — soft +/-15% per-channel modulation,
-    int mi = int(mod(cell.x, 3.0)); // signalled by m.w = 1.0 so apply_mask uses the
-    vec3 c = (mi == 0) ? vec3(1.15, 0.85, 0.85)  // pre-multiply branch instead of the
-           : (mi == 1) ? vec3(0.85, 1.15, 0.85)  // luma-preserving aperture math.
-                       : vec3(0.85, 0.85, 1.15);
-    return vec4(c, 1.0);
-  }
-  return vec4(0.5);                // 0 = Off — identity pass through apply_mask
-}
-
-// Phosphor-mask application with overflow spill for highlight preservation.
-// Classic stripe (m.w == 1.0) is just a per-channel brightness modulation —
-// the aperture-mask math divides by 0 in that regime, so we branch out.
-vec3 apply_mask(vec3 col, vec2 fc) {
-  vec4 m = generate_mask(fc);
-  if (m.w >= 1.0) {
-    return col * mix(vec3(1.0), m.rgb, u_maskBrightness);
-  }
-  col *= mix(m.w, 1.0, u_maskBrightness);
-  vec3 target = col / m.w;
-  vec3 primary = clamp(target, 0.0, 1.0);
-  vec3 secondary = (target - primary) / (1.0 / m.w - 1.0);
-  return primary * m.rgb + secondary * (1.0 - m.rgb);
+  int count = max(u_stripeCount, 1);
+  int idx = clamp(int(floor(uv.y * float(count))), 0, count - 1);
+  return u_stripeColors[idx];
 }
 
 void main() {
   vec2 uv = v_uv;
-  bool on = u_enabled > 0.5;
+  if (u_enabled > 0.5 && u_curvature > 0.0) uv = curve(uv, u_curvature);
 
-  // Curvature warp first, so the bezel and content live in the same
-  // distorted coordinate space.
-  if (on && u_curvature > 0.0) uv = warp(uv, u_aspect, u_curvature * 0.5);
-
-  // Rounded bezel mask in unit-canvas space. Anti-aliased via fwidth.
+  // Rounded bezel mask in unit-canvas space (after warp, so it follows
+  // the curved face). Anti-aliased via screen-space derivatives.
   float bezelR = 0.12 * u_corners;
   vec2  bq     = abs(uv - 0.5) - 0.5 + bezelR;
   float bezelD = min(max(bq.x, bq.y), 0.0) + length(max(bq, vec2(0.0))) - bezelR;
@@ -775,75 +651,49 @@ void main() {
   if (bezelD > bezelAA * 2.0) { frag = vec4(0.0, 0.0, 0.0, 1.0); return; }
   float bezelMask = 1.0 - smoothstep(-bezelAA, bezelAA, bezelD);
 
-  bool inside = uv.x >= u_screenRect.x && uv.x <= u_screenRect.z
-             && uv.y >= u_screenRect.y && uv.y <= u_screenRect.w;
-  vec2 specUV = vec2(
-    (uv.x - u_screenRect.x) / (u_screenRect.z - u_screenRect.x),
-    (uv.y - u_screenRect.y) / (u_screenRect.w - u_screenRect.y)
-  );
+  vec3 color = sampleScreen(uv);
 
-  // CRT-off raw passthrough — keep the sharp-pixel look from before.
-  if (!on) {
-    vec3 c;
-    if (inside) {
-      c = texture(u_tex, specUV).rgb;
-    } else {
-      int count = max(u_stripeCount, 1);
-      int idx = clamp(int(floor(uv.y * float(count))), 0, count - 1);
-      c = u_stripeColors[idx];
+  if (u_enabled > 0.5) {
+    // Highlight glow — single-pass bloom approximation. Boosts bright
+    // pixels before the mask so the gain spreads through the phosphor
+    // stripe naturally.
+    if (u_glow > 0.0) {
+      float lumaPre = dot(color, vec3(0.2126, 0.7152, 0.0722));
+      float halo = smoothstep(0.4, 1.0, lumaPre) * u_glow * 0.6;
+      color *= 1.0 + halo;
     }
-    frag = vec4(c * bezelMask, 1.0);
-    return;
-  }
 
-  // CRT-on pipeline. Sample inside the screen rect with the full
-  // subpixel + chromatic-aberration reconstruction; outside, take the
-  // BORDER stripe colour (converted to linear so the mask math stays
-  // in the same space). Mask + sRGB encode applies to both so the
-  // phosphor grille reads across the whole glass.
-  vec3 linearCol;
-  if (inside) {
-    linearCol = sampleScreen(specUV, u_colorOffset * 0.5);
-  } else {
-    int count = max(u_stripeCount, 1);
-    int idx = clamp(int(floor(uv.y * float(count))), 0, count - 1);
-    linearCol = srgb_to_linear(u_stripeColors[idx]);
-  }
-
-  // Highlight glow — cheap single-pass bloom approximation. Boosts
-  // bright pixels before the mask so the spillover spreads naturally
-  // through the phosphor grille. Reads as a soft phosphor halo on
-  // brights without needing a separable blur pass.
-  if (u_glow > 0.0) {
-    float lumaPre = dot(linearCol, vec3(0.2126, 0.7152, 0.0722));
-    float halo = smoothstep(0.4, 1.0, lumaPre) * u_glow * 0.6;
-    linearCol *= 1.0 + halo;
-  }
-
-  linearCol = apply_mask(linearCol, gl_FragCoord.xy);
-
-  // Luminance-preserving scanlines (carried over from our previous
-  // pipeline). Bright peaks compensate for dark troughs so per-pixel
-  // average tracks input luma; dim pixels get a softer modulation so
-  // dark scenes stay readable.
-  if (u_scanline > 0.0) {
-    float py = gl_FragCoord.y;
+    // Luminance-preserving scanline. Bright peaks compensate for dark
+    // troughs so the per-pixel average tracks input luma; dim pixels
+    // get a softer modulation so dark scenes stay readable. Sampled in
+    // warped uv space (× output height) so the lines bend with the
+    // curvature.
+    float py   = uv.y * u_outputSize.y;
     float scan = 0.5 + 0.5 * sin(py * 3.14159);
-    float luma = dot(linearCol, vec3(0.2126, 0.7152, 0.0722));
+    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
     float strength = mix(0.10, 0.32, 1.0 - luma) * u_scanline;
     float scanMul = mix(1.0 + strength, 1.0 - strength, scan);
-    linearCol *= scanMul;
-  }
+    color *= scanMul;
 
-  // Vignette in unit-canvas space.
-  if (u_vignette > 0.0) {
+    // 3-pixel RGB stripe aperture mask in warped uv space, so the mask
+    // cells bend with the curvature the same way a real CRT's phosphor
+    // grille sits on the curved glass. u_maskScale scales the cell
+    // width up so the stripes read as chunky pixels on hi-DPI screens.
+    float px = uv.x * u_outputSize.x / max(u_maskScale, 1.0);
+    int mi = int(mod(px, 3.0));
+    vec3 baseMask = (mi == 0) ? vec3(1.15, 0.85, 0.85)
+                  : (mi == 1) ? vec3(0.85, 1.15, 0.85)
+                              : vec3(0.85, 0.85, 1.15);
+    color *= mix(vec3(1.0), baseMask, u_mask);
+
+    // Vignette toward the corners.
     vec2 d = uv * 2.0 - 1.0;
     float vigBase = clamp(1.0 - dot(d, d) * 0.18, 0.0, 1.0);
-    linearCol *= mix(1.0, vigBase, u_vignette);
+    color *= mix(1.0, vigBase, u_vignette);
   }
 
-  vec3 srgb = linear_to_srgb(linearCol);
-  frag = vec4(srgb * bezelMask, 1.0);
+  color *= bezelMask;
+  frag = vec4(color, 1.0);
 }`;
 
     function compileShader(gl, type, src) {
@@ -894,21 +744,20 @@ void main() {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 192, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
 
       const u = {
-        tex:            gl.getUniformLocation(prog, "u_tex"),
-        screenRect:     gl.getUniformLocation(prog, "u_screenRect"),
-        stripeColors:   gl.getUniformLocation(prog, "u_stripeColors"),
-        stripeCount:    gl.getUniformLocation(prog, "u_stripeCount"),
-        aspect:         gl.getUniformLocation(prog, "u_aspect"),
-        enabled:        gl.getUniformLocation(prog, "u_enabled"),
-        curvature:      gl.getUniformLocation(prog, "u_curvature"),
-        corners:        gl.getUniformLocation(prog, "u_corners"),
-        colorOffset:    gl.getUniformLocation(prog, "u_colorOffset"),
-        maskBrightness: gl.getUniformLocation(prog, "u_maskBrightness"),
-        maskType:       gl.getUniformLocation(prog, "u_maskType"),
-        scanline:       gl.getUniformLocation(prog, "u_scanline"),
-        vignette:       gl.getUniformLocation(prog, "u_vignette"),
-        glow:           gl.getUniformLocation(prog, "u_glow"),
-        maskScale:      gl.getUniformLocation(prog, "u_maskScale"),
+        tex:          gl.getUniformLocation(prog, "u_tex"),
+        screenRect:   gl.getUniformLocation(prog, "u_screenRect"),
+        stripeColors: gl.getUniformLocation(prog, "u_stripeColors"),
+        stripeCount:  gl.getUniformLocation(prog, "u_stripeCount"),
+        outputSize:   gl.getUniformLocation(prog, "u_outputSize"),
+        enabled:      gl.getUniformLocation(prog, "u_enabled"),
+        curvature:    gl.getUniformLocation(prog, "u_curvature"),
+        corners:      gl.getUniformLocation(prog, "u_corners"),
+        scanline:     gl.getUniformLocation(prog, "u_scanline"),
+        mask:         gl.getUniformLocation(prog, "u_mask"),
+        vignette:     gl.getUniformLocation(prog, "u_vignette"),
+        glow:         gl.getUniformLocation(prog, "u_glow"),
+        colorOffset:  gl.getUniformLocation(prog, "u_colorOffset"),
+        maskScale:    gl.getUniformLocation(prog, "u_maskScale"),
       };
       gl.uniform1i(u.tex, 0);
 
@@ -953,9 +802,6 @@ void main() {
       const x0 = (w - cw) * 0.5;
       const y0 = (h - ch) * 0.5;
       glCtx.screenRect = [x0 / w, y0 / h, (x0 + cw) / w, (y0 + ch) / h];
-      // Aspect = canvas height/width — fed into warp() so the radial
-      // distortion stays circular regardless of viewport shape.
-      glCtx.aspect = h / w;
     }
 
     // Legacy 2D fallback path: original putImageData renderer with
@@ -1101,17 +947,16 @@ void main() {
         gl.uniform4fv(u.screenRect, screenRect);
         gl.uniform3fv(u.stripeColors, stripeUniformBuf);
         gl.uniform1i(u.stripeCount, count);
-        gl.uniform1f(u.aspect,         glCtx.aspect);
-        gl.uniform1f(u.enabled,        crtParams.enabled ? 1.0 : 0.0);
-        gl.uniform1f(u.curvature,      crtParams.curvature);
-        gl.uniform1f(u.corners,        crtParams.corners);
-        gl.uniform1f(u.colorOffset,    crtParams.colorOffset);
-        gl.uniform1f(u.maskBrightness, crtParams.maskBrightness);
-        gl.uniform1i(u.maskType,       crtParams.maskType | 0);
-        gl.uniform1f(u.scanline,       crtParams.scanline);
-        gl.uniform1f(u.vignette,       crtParams.vignette);
-        gl.uniform1f(u.glow,           crtParams.glow);
-        gl.uniform1f(u.maskScale,      crtParams.maskScale);
+        gl.uniform2f(u.outputSize,  canvas.width, canvas.height);
+        gl.uniform1f(u.enabled,     crtParams.enabled ? 1.0 : 0.0);
+        gl.uniform1f(u.curvature,   crtParams.curvature);
+        gl.uniform1f(u.corners,     crtParams.corners);
+        gl.uniform1f(u.scanline,    crtParams.scanline);
+        gl.uniform1f(u.mask,        crtParams.mask);
+        gl.uniform1f(u.vignette,    crtParams.vignette);
+        gl.uniform1f(u.glow,        crtParams.glow);
+        gl.uniform1f(u.colorOffset, crtParams.colorOffset);
+        gl.uniform1f(u.maskScale,   crtParams.maskScale);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
       } else {
         // Legacy 2D path.

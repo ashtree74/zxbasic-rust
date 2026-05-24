@@ -12,7 +12,7 @@
 
 ## What this is
 
-`zxbasic-rust` is a from-scratch reimplementation of the BASIC runtime that shipped on every Sinclair ZX Spectrum 48 K — the interpreter, the line editor, the calculator, the screen, the keyboard handler, the beeper, the lower-screen "0 OK" report, even the flashing inverse-`K` cursor. None of it is a Z80 emulator. None of it runs the original ROM bytes. Every behaviour the 1982 hardware exposed is **re-derived in idiomatic Rust** from reading the original Z80 source as a specification — and then compiled to native macOS / Windows / Linux binaries *and* a tiny WebAssembly module that boots a Spectrum-perfect screen inside any modern browser.
+`zxbasic-rust` is a from-scratch reimplementation of the BASIC runtime that shipped on every Sinclair ZX Spectrum 48 K — the interpreter, the line editor, the calculator, the screen, the keyboard handler, the beeper, the lower-screen "0 OK" report, even the flashing inverse-`K` cursor. There is no Z80 CPU emulation, no instruction decoder, no bus, no cycle-stepped ULA, and none of the original ROM bytes are ever executed — in the taxonomy of emulator design this is **high-level emulation**: every behaviour the 1982 hardware exposed is **re-derived in idiomatic Rust** from reading the original Z80 source as a specification, and then compiled to native macOS / Windows / Linux binaries *and* a tiny WebAssembly module that boots a Spectrum-perfect screen inside any modern browser.
 
 You can paste a program written for a real Spectrum and it just runs. The `©` glyph from the original character ROM. The exact bordcr colour pair the lower screen shifts into after `BORDER 2`. The K-mode cursor that pulses through the FLASH attribute bit at the same cadence as the real ULA. The `0 OK, 0:1` status line that appears the instant a program completes.
 
@@ -22,7 +22,7 @@ It is also, deliberately, **a controlled experiment in what current AI tooling c
 
 For decades, "port the BASIC ROM of a 1982 home computer to a modern stack" has been a textbook example of a project that demands a small team of specialists and a long calendar. You need someone who reads Z80, someone who understands the calculator's bytecode dispatch, someone who can reverse the screen attribute model, someone who can land it on multiple targets, and time — months of it — to align all of that with what real software actually does.
 
-This repository was built in **a handful of hours**, by **a single experienced AI builder driving a bespoke workflow designed specifically to reconstruct architectures out of assembly-era source** — no pre-existing knowledge of the ROM's internals carried into the room, no prior port to crib from. The 16 KB of commented Z80 served the same role a real hardware specification would: an authoritative reference for *what* the system does. The workflow handled the *how* — reading the source, re-deriving semantics in Rust, picking the architecture, writing the tests, debugging failures from screenshots, refactoring when the design stopped fitting, and ultimately producing a runtime that boots into a screen indistinguishable from a real Spectrum's.
+This repository was built in **a handful of hours**, by **a single experienced AI builder driving a bespoke workflow designed specifically to reconstruct architectures out of assembly-era source** — no human ROM expert in the room, no prior port to crib from. The 16 KB of commented Z80 served the same role a real hardware specification would: an authoritative reference for *what* the system does. The workflow handled the *how* — reading the source, re-deriving semantics in Rust, picking the architecture, writing the tests, debugging failures from screenshots, refactoring when the design stopped fitting, and ultimately producing a runtime that boots into a screen indistinguishable from a real Spectrum's.
 
 That is the demonstration. The interesting thing isn't that "the AI wrote some code." The interesting thing is the *kind* of code:
 
@@ -77,7 +77,7 @@ vendor/zxrom/          # the original 1982 ROM in commented Z80 — submodule, s
 
 The `vendor/zxrom` submodule is the [`cheveron/zxrom`](https://github.com/cheveron/zxrom) repository — a faithful, well-commented disassembly of the original Sinclair Research ROM that compiles back to a byte-identical binary. We use it solely as a **specification**: the source comments and labels tell us what each routine is supposed to do, and we re-implement that meaning in Rust. The Z80 itself is never executed, and the binary the source produces (which remains the property of Sky/Comcast) is never built or shipped. Data tables that *are* reproduced — the 96‑glyph font, the keyword table, the error messages — are extracted by one-shot Rust programs in `tools/` and committed as plain Rust constants.
 
-The runtime is a state machine, not an emulator. `System` owns everything: the BASIC program (a `BTreeMap<u16, String>` of stored lines), the variable table, the for-stack, the gosub-stack, the user-fn table, the array table, the audio queue, the program counter, the BREAK flag, the BEEP-blocking frame countdown, the editor input line, and the lower-screen status. The host (browser or native window) calls `feed_key`, `frame`, and `render_into` — that's the entire API. Everything else, including the JS-side audio scheduling and the canvas paint, is a thin glue layer.
+The runtime is a state machine over BASIC semantics — there is no Z80 CPU underneath. `System` owns everything: the BASIC program (a `BTreeMap<u16, String>` of stored lines), the variable table, the for-stack, the gosub-stack, the user-fn table, the array table, the audio queue, the program counter, the BREAK flag, the BEEP-blocking frame countdown, the editor input line, and the lower-screen status. The host (browser or native window) calls `feed_key`, `frame`, and `render_into` — that's the entire API. Everything else, including the JS-side audio scheduling and the canvas paint, is a thin glue layer.
 
 ## Running it locally
 
@@ -174,6 +174,10 @@ Built by **[Adam Jesionkiewicz](mailto:adam@jesion.pl)** at **[Frontiers Lab](ht
 The ZX Spectrum is © Sky/Comcast (formerly Sinclair Research Ltd, 1982). This project reimplements the *semantics* of the system's BASIC interpreter from a Creative Commons-licensed source disassembly and ships no binary derived from the original ROM. The character font is reproduced under the source disassembly's CC BY-SA 4.0 terms.
 
 The Z80 source used as a specification is [`cheveron/zxrom`](https://github.com/cheveron/zxrom), © 2011 Source Solutions, Inc., released under CC BY-SA 4.0 — the source files are public for historical and educational use; the binary they produce is not. We respect that boundary.
+
+## Inspirations & borrowings
+
+The CRT shader pipeline borrows from two public-domain Godot shaders by Harrison Allen — "CRT with luminance preservation" and the "no scanlines" variant — for the radial barrel warp, the sRGB-linear mask math, the three-tap subpixel reconstruction with per-channel beam offsets, and the catalogue of phosphor patterns (Dots, Aperture, Wide, Wide Soft, Slot). The screen-rect layout, the BORDER stripe rendering, the rounded bezel, the master toggle, and the settings UI on top are ours.
 
 ## License
 

@@ -53,6 +53,9 @@
       image-rendering: pixelated;
       display: block;
       outline: none;
+      /* Subtle CRT-style rounded corners so the canvas reads as a screen
+         bezel, not a flat bitmap pasted onto the page. */
+      border-radius: 14px;
       /* Stop iOS double-tap-to-zoom etc. from interfering with the
          touchstart-to-focus-mobile-input handler below. */
       touch-action: manipulation;

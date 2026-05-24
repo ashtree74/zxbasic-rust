@@ -318,6 +318,11 @@
         <output for="crt-curvature">100</output>
       </label>
       <label class="crt-row">
+        <span>Corner radius</span>
+        <input type="range" id="crt-corners" min="0" max="100" value="100">
+        <output for="crt-corners">100</output>
+      </label>
+      <label class="crt-row">
         <span>Scanlines</span>
         <input type="range" id="crt-scanline" min="0" max="100" value="100">
         <output for="crt-scanline">100</output>
@@ -386,7 +391,7 @@
     // Persisted as a single JSON blob; falls back cleanly when the key
     // is missing, malformed, or partially populated by an older build.
     const CRT_DEFAULTS = Object.freeze({
-      enabled: true, curvature: 1, scanline: 1, mask: 1, vignette: 1,
+      enabled: true, curvature: 1, scanline: 1, mask: 1, vignette: 1, corners: 1,
     });
     const CRT_STORAGE_KEY = "crt-params";
     function clamp01(v) { return Math.max(0, Math.min(1, +v || 0)); }
@@ -405,6 +410,7 @@
         scanline:  clamp01(src.scanline),
         mask:      clamp01(src.mask),
         vignette:  clamp01(src.vignette),
+        corners:   clamp01(src.corners),
       };
     }
     const crtParams = loadCrtParams();
@@ -430,7 +436,7 @@
     const crtSettingsBtn = document.getElementById("crt-settings-btn");
     const crtCloseBtn = document.getElementById("crt-dialog-close");
     const crtResetBtn = document.getElementById("crt-reset");
-    const sliderKeys = ["curvature", "scanline", "mask", "vignette"];
+    const sliderKeys = ["curvature", "corners", "scanline", "mask", "vignette"];
     const sliders = {};
     for (const k of sliderKeys) {
       const input = document.getElementById("crt-" + k);
@@ -467,6 +473,7 @@
     crtDialog.addEventListener("close", () => { canvas.focus(); });
     crtResetBtn.addEventListener("click", () => {
       crtParams.curvature = CRT_DEFAULTS.curvature;
+      crtParams.corners   = CRT_DEFAULTS.corners;
       crtParams.scanline  = CRT_DEFAULTS.scanline;
       crtParams.mask      = CRT_DEFAULTS.mask;
       crtParams.vignette  = CRT_DEFAULTS.vignette;
@@ -501,10 +508,11 @@ uniform vec3 u_stripeColors[16];
 uniform int  u_stripeCount;
 uniform vec2 u_outputSize;          // physical canvas pixels (DPR-scaled)
 uniform float u_enabled;            // master: 1 = CRT pipeline on, 0 = raw passthrough
-uniform float u_curvature;          // 0 = flat,        1 = full barrel
+uniform float u_curvature;          // 0 = flat,         1 = full barrel
 uniform float u_scanline;           // 0 = no scanlines, 1 = full luma-preserving scanlines
 uniform float u_mask;               // 0 = no aperture,  1 = full RGB stripe mask
 uniform float u_vignette;           // 0 = flat lit,     1 = full corner falloff
+uniform float u_corners;            // 0 = sharp corners, 1 = fully rounded CRT bezel
 
 vec2 curve(vec2 uv, float strength) {
   // Per-axis barrel distortion; strength scales how far the corners
@@ -535,10 +543,21 @@ vec3 sampleScreen(vec2 uv) {
 void main() {
   vec2 uv = v_uv;
   if (u_enabled > 0.5 && u_curvature > 0.0) uv = curve(uv, u_curvature);
-  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+
+  // CRT face mask. With u_corners = 0 this reduces to a strict [0,1]
+  // rectangle bounds check; raising it carves a rounded-rect bezel out
+  // of the curved face so the screen reads like a real CRT's rounded
+  // glass. Anti-aliased via screen-space derivatives so the edge stays
+  // crisp at any canvas size.
+  float bezelR = 0.12 * u_corners;
+  vec2 bq = abs(uv - 0.5) - 0.5 + bezelR;
+  float bezelD = min(max(bq.x, bq.y), 0.0) + length(max(bq, vec2(0.0))) - bezelR;
+  float bezelAA = max(fwidth(bezelD), 1e-5);
+  if (bezelD > bezelAA * 2.0) {
     frag = vec4(0.0, 0.0, 0.0, 1.0);
     return;
   }
+  float bezelMask = 1.0 - smoothstep(-bezelAA, bezelAA, bezelD);
 
   vec3 color = sampleScreen(uv);
 
@@ -571,6 +590,11 @@ void main() {
     float vigBase = clamp(1.0 - dot(d, d) * 0.18, 0.0, 1.0);
     color *= mix(1.0, vigBase, u_vignette);
   }
+
+  // Soft-blend the bezel edge so rounded corners anti-alias instead of
+  // showing a stair-step. With u_corners = 0 the mask is exactly 1.0
+  // inside the rect, so the legacy sharp-corner look is unchanged.
+  color *= bezelMask;
 
   frag = vec4(color, 1.0);
 }`;
@@ -633,6 +657,7 @@ void main() {
         scanline:     gl.getUniformLocation(prog, "u_scanline"),
         mask:         gl.getUniformLocation(prog, "u_mask"),
         vignette:     gl.getUniformLocation(prog, "u_vignette"),
+        corners:      gl.getUniformLocation(prog, "u_corners"),
       };
       gl.uniform1i(u.tex, 0);
 
@@ -829,6 +854,7 @@ void main() {
         gl.uniform1f(u.scanline,  crtParams.scanline);
         gl.uniform1f(u.mask,      crtParams.mask);
         gl.uniform1f(u.vignette,  crtParams.vignette);
+        gl.uniform1f(u.corners,   crtParams.corners);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
       } else {
         // Legacy 2D path.

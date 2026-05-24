@@ -52,6 +52,11 @@
       inset: 0;
       width: 100vw;
       height: 100vh;
+      /* Subtle CRT-style rounded corners. On the WebGL path the canvas
+         spans the viewport, so this rounds the viewport corners around
+         the shader-drawn curvature. On the legacy 2D fallback below the
+         canvas is the screen itself, where it reads as a bezel. */
+      border-radius: 14px;
       /* Stop iOS double-tap-to-zoom etc. from interfering with the
          touchstart-to-focus-mobile-input handler below. */
       touch-action: manipulation;

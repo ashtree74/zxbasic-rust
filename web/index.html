@@ -640,7 +640,31 @@ vec3 sampleScreen(vec2 uv) {
 
 void main() {
   vec2 uv = v_uv;
-  if (u_enabled > 0.5 && u_curvature > 0.0) uv = curve(uv, u_curvature);
+  bool on = u_enabled > 0.5;
+
+  // Master CRT off → raw passthrough. No warp, no bezel, no mask, no
+  // chromatic aberration, nothing. Same look as the pre-shader 2D
+  // canvas: sharp pixels inside the screen rect, flat BORDER outside.
+  if (!on) {
+    vec3 c;
+    bool insideRaw = uv.x >= u_screenRect.x && uv.x <= u_screenRect.z
+                  && uv.y >= u_screenRect.y && uv.y <= u_screenRect.w;
+    if (insideRaw) {
+      vec2 s = vec2(
+        (uv.x - u_screenRect.x) / (u_screenRect.z - u_screenRect.x),
+        (uv.y - u_screenRect.y) / (u_screenRect.w - u_screenRect.y)
+      );
+      c = texture(u_tex, s).rgb;
+    } else {
+      int count = max(u_stripeCount, 1);
+      int idx = clamp(int(floor(uv.y * float(count))), 0, count - 1);
+      c = u_stripeColors[idx];
+    }
+    frag = vec4(c, 1.0);
+    return;
+  }
+
+  if (u_curvature > 0.0) uv = curve(uv, u_curvature);
 
   // Rounded bezel mask in unit-canvas space (after warp, so it follows
   // the curved face). Anti-aliased via screen-space derivatives.
@@ -653,44 +677,42 @@ void main() {
 
   vec3 color = sampleScreen(uv);
 
-  if (u_enabled > 0.5) {
-    // Highlight glow — single-pass bloom approximation. Boosts bright
-    // pixels before the mask so the gain spreads through the phosphor
-    // stripe naturally.
-    if (u_glow > 0.0) {
-      float lumaPre = dot(color, vec3(0.2126, 0.7152, 0.0722));
-      float halo = smoothstep(0.4, 1.0, lumaPre) * u_glow * 0.6;
-      color *= 1.0 + halo;
-    }
-
-    // Luminance-preserving scanline. Bright peaks compensate for dark
-    // troughs so the per-pixel average tracks input luma; dim pixels
-    // get a softer modulation so dark scenes stay readable. Sampled in
-    // warped uv space (× output height) so the lines bend with the
-    // curvature.
-    float py   = uv.y * u_outputSize.y;
-    float scan = 0.5 + 0.5 * sin(py * 3.14159);
-    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    float strength = mix(0.10, 0.32, 1.0 - luma) * u_scanline;
-    float scanMul = mix(1.0 + strength, 1.0 - strength, scan);
-    color *= scanMul;
-
-    // 3-pixel RGB stripe aperture mask in warped uv space, so the mask
-    // cells bend with the curvature the same way a real CRT's phosphor
-    // grille sits on the curved glass. u_maskScale scales the cell
-    // width up so the stripes read as chunky pixels on hi-DPI screens.
-    float px = uv.x * u_outputSize.x / max(u_maskScale, 1.0);
-    int mi = int(mod(px, 3.0));
-    vec3 baseMask = (mi == 0) ? vec3(1.15, 0.85, 0.85)
-                  : (mi == 1) ? vec3(0.85, 1.15, 0.85)
-                              : vec3(0.85, 0.85, 1.15);
-    color *= mix(vec3(1.0), baseMask, u_mask);
-
-    // Vignette toward the corners.
-    vec2 d = uv * 2.0 - 1.0;
-    float vigBase = clamp(1.0 - dot(d, d) * 0.18, 0.0, 1.0);
-    color *= mix(1.0, vigBase, u_vignette);
+  // Highlight glow — single-pass bloom approximation. Boosts bright
+  // pixels before the mask so the gain spreads through the phosphor
+  // stripe naturally.
+  if (u_glow > 0.0) {
+    float lumaPre = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    float halo = smoothstep(0.4, 1.0, lumaPre) * u_glow * 0.6;
+    color *= 1.0 + halo;
   }
+
+  // Luminance-preserving scanline. Bright peaks compensate for dark
+  // troughs so the per-pixel average tracks input luma; dim pixels
+  // get a softer modulation so dark scenes stay readable. Sampled in
+  // warped uv space (× output height) so the lines bend with the
+  // curvature.
+  float py   = uv.y * u_outputSize.y;
+  float scan = 0.5 + 0.5 * sin(py * 3.14159);
+  float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  float strength = mix(0.10, 0.32, 1.0 - luma) * u_scanline;
+  float scanMul = mix(1.0 + strength, 1.0 - strength, scan);
+  color *= scanMul;
+
+  // 3-pixel RGB stripe aperture mask in warped uv space, so the mask
+  // cells bend with the curvature the same way a real CRT's phosphor
+  // grille sits on the curved glass. u_maskScale scales the cell
+  // width up so the stripes read as chunky pixels on hi-DPI screens.
+  float px = uv.x * u_outputSize.x / max(u_maskScale, 1.0);
+  int mi = int(mod(px, 3.0));
+  vec3 baseMask = (mi == 0) ? vec3(1.15, 0.85, 0.85)
+                : (mi == 1) ? vec3(0.85, 1.15, 0.85)
+                            : vec3(0.85, 0.85, 1.15);
+  color *= mix(vec3(1.0), baseMask, u_mask);
+
+  // Vignette toward the corners.
+  vec2 d = uv * 2.0 - 1.0;
+  float vigBase = clamp(1.0 - dot(d, d) * 0.18, 0.0, 1.0);
+  color *= mix(1.0, vigBase, u_vignette);
 
   color *= bezelMask;
   frag = vec4(color, 1.0);

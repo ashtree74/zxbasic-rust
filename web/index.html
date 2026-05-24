@@ -208,6 +208,21 @@
       text-align: right;
       font-size: 12px;
     }
+    .crt-row-select select {
+      grid-column: 2 / span 2;
+      background: #2a2a2a;
+      color: #e6e6e6;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      padding: 5px 8px;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .crt-row-select select:focus-visible {
+      outline: 2px solid #79c0ff;
+      outline-offset: 1px;
+    }
     #crt-dialog .actions {
       margin-top: 14px;
       display: flex;
@@ -314,28 +329,34 @@
       <h2 id="crt-dialog-title">CRT effects</h2>
       <label class="crt-row">
         <span>Curvature</span>
-        <input type="range" id="crt-curvature" min="0" max="100" value="100">
-        <output for="crt-curvature">100</output>
+        <input type="range" id="crt-curvature" min="0" max="100" value="22">
+        <output for="crt-curvature">22</output>
       </label>
       <label class="crt-row">
         <span>Corner radius</span>
-        <input type="range" id="crt-corners" min="0" max="100" value="100">
-        <output for="crt-corners">100</output>
+        <input type="range" id="crt-corners" min="0" max="100" value="11">
+        <output for="crt-corners">11</output>
+      </label>
+      <label class="crt-row crt-row-select">
+        <span>Mask type</span>
+        <select id="crt-mask-type">
+          <option value="0">Off</option>
+          <option value="1">Dots</option>
+          <option value="2" selected>Aperture grille</option>
+          <option value="3">Wide grille</option>
+          <option value="4">Wide soft grille</option>
+          <option value="5">Slot mask</option>
+        </select>
       </label>
       <label class="crt-row">
-        <span>Scanlines</span>
-        <input type="range" id="crt-scanline" min="0" max="100" value="100">
-        <output for="crt-scanline">100</output>
+        <span>Mask brightness</span>
+        <input type="range" id="crt-maskBrightness" min="0" max="100" value="100">
+        <output for="crt-maskBrightness">100</output>
       </label>
       <label class="crt-row">
-        <span>Aperture mask</span>
-        <input type="range" id="crt-mask" min="0" max="100" value="100">
-        <output for="crt-mask">100</output>
-      </label>
-      <label class="crt-row">
-        <span>Vignette</span>
-        <input type="range" id="crt-vignette" min="0" max="100" value="100">
-        <output for="crt-vignette">100</output>
+        <span>Chromatic aberration</span>
+        <input type="range" id="crt-colorOffset" min="0" max="100" value="30">
+        <output for="crt-colorOffset">30</output>
       </label>
       <div class="actions">
         <button id="crt-reset" type="button">Reset</button>
@@ -391,8 +412,14 @@
     // Persisted as a single JSON blob; falls back cleanly when the key
     // is missing, malformed, or partially populated by an older build.
     const CRT_DEFAULTS = Object.freeze({
-      enabled: true, curvature: 0.22, corners: 0.11, scanline: 1, mask: 1, vignette: 1,
+      enabled: true,
+      curvature: 0.22,         // → warp curve 0..0.5
+      corners: 0.11,           // → bezel radius 0..0.12
+      colorOffset: 0.30,       // → chromatic-aberration offset 0..0.5
+      maskBrightness: 1.0,     // 1.0 = full brightness, lower preserves mask in highlights
+      maskType: 2,             // 0=Off, 1=Dots, 2=Aperture, 3=Wide, 4=WideSoft, 5=Slot
     });
+    const MASK_TYPE_MAX = 5;
     const CRT_STORAGE_KEY = "crt-params";
     function clamp01(v) { return Math.max(0, Math.min(1, +v || 0)); }
     function loadCrtParams() {
@@ -404,13 +431,14 @@
       try { stored = JSON.parse(localStorage.getItem(CRT_STORAGE_KEY) || "{}") || {}; }
       catch { /* keep defaults */ }
       const src = { ...CRT_DEFAULTS, ...migrated, ...stored };
+      const mt = Math.round(+src.maskType);
       return {
-        enabled:   !!src.enabled,
-        curvature: clamp01(src.curvature),
-        scanline:  clamp01(src.scanline),
-        mask:      clamp01(src.mask),
-        vignette:  clamp01(src.vignette),
-        corners:   clamp01(src.corners),
+        enabled:        !!src.enabled,
+        curvature:      clamp01(src.curvature),
+        corners:        clamp01(src.corners),
+        colorOffset:    clamp01(src.colorOffset),
+        maskBrightness: clamp01(src.maskBrightness),
+        maskType:       Number.isFinite(mt) ? Math.max(0, Math.min(MASK_TYPE_MAX, mt)) : CRT_DEFAULTS.maskType,
       };
     }
     const crtParams = loadCrtParams();
@@ -452,7 +480,7 @@
     const crtSettingsBtn = document.getElementById("crt-settings-btn");
     const crtCloseBtn = document.getElementById("crt-dialog-close");
     const crtResetBtn = document.getElementById("crt-reset");
-    const sliderKeys = ["curvature", "corners", "scanline", "mask", "vignette"];
+    const sliderKeys = ["curvature", "corners", "colorOffset", "maskBrightness"];
     const sliders = {};
     for (const k of sliderKeys) {
       const input = document.getElementById("crt-" + k);
@@ -464,12 +492,19 @@
         saveCrtParams();
       });
     }
+    const maskSelect = document.getElementById("crt-mask-type");
+    maskSelect.addEventListener("change", () => {
+      const v = parseInt(maskSelect.value, 10);
+      crtParams.maskType = Number.isFinite(v) ? Math.max(0, Math.min(MASK_TYPE_MAX, v)) : CRT_DEFAULTS.maskType;
+      saveCrtParams();
+    });
     function syncSlidersFromState() {
       for (const k of sliderKeys) {
         const v = Math.round(crtParams[k] * 100);
         sliders[k].input.value = v;
         sliders[k].output.textContent = v;
       }
+      maskSelect.value = String(crtParams.maskType);
     }
     syncSlidersFromState();
     crtSettingsBtn.addEventListener("click", () => {
@@ -488,11 +523,11 @@
     });
     crtDialog.addEventListener("close", () => { canvas.focus(); });
     crtResetBtn.addEventListener("click", () => {
-      crtParams.curvature = CRT_DEFAULTS.curvature;
-      crtParams.corners   = CRT_DEFAULTS.corners;
-      crtParams.scanline  = CRT_DEFAULTS.scanline;
-      crtParams.mask      = CRT_DEFAULTS.mask;
-      crtParams.vignette  = CRT_DEFAULTS.vignette;
+      crtParams.curvature      = CRT_DEFAULTS.curvature;
+      crtParams.corners        = CRT_DEFAULTS.corners;
+      crtParams.colorOffset    = CRT_DEFAULTS.colorOffset;
+      crtParams.maskBrightness = CRT_DEFAULTS.maskBrightness;
+      crtParams.maskType       = CRT_DEFAULTS.maskType;
       syncSlidersFromState();
       saveCrtParams();
     });
@@ -513,106 +548,202 @@ void main() {
   gl_Position = vec4(a_pos, 0.0, 1.0);
 }`;
 
+    // Port of Harrison Allen's "CRT with Luminance Preservation (no
+    // scanlines)" (public domain, godotshaders.com). Key pieces:
+    //   * radial barrel warp with aspect compensation
+    //   * sRGB <-> linear so the mask math averages in light-linear space
+    //   * 3-tap horizontal subpixel reconstruction with per-channel beam
+    //     offsets (chromatic aberration)
+    //   * smoothstep'd row interpolation between two scan rows (gives a
+    //     soft inter-scanline blend rather than visible scan stripes)
+    //   * five selectable phosphor-mask patterns (Dots, Aperture Grille,
+    //     Wide Grille, Wide Soft Grille, Slot Mask) plus an Off setting
+    //   * mask brightness control that preserves highlights by spilling
+    //     overflow into adjacent subpixels
+    // Our additions on top: BORDER stripe area outside the Spectrum
+    // screen rect, and a rounded-rect bezel mask for the curved face.
     const FRAG_SRC = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 out vec4 frag;
 
-uniform sampler2D u_tex;
-uniform vec4 u_screenRect;          // x0,y0,x1,y1 of Spectrum screen in [0..1]
-uniform vec3 u_stripeColors[16];
-uniform int  u_stripeCount;
-uniform vec2 u_outputSize;          // physical canvas pixels (DPR-scaled)
+uniform sampler2D u_tex;            // 256x192 Spectrum screen
+uniform vec4  u_screenRect;         // x0,y0,x1,y1 of Spectrum screen in viewport [0..1]
+uniform vec3  u_stripeColors[16];
+uniform int   u_stripeCount;
+uniform float u_aspect;             // canvas height / width — keeps warp radial
 uniform float u_enabled;            // master: 1 = CRT pipeline on, 0 = raw passthrough
-uniform float u_curvature;          // 0 = flat,         1 = full barrel
-uniform float u_scanline;           // 0 = no scanlines, 1 = full luma-preserving scanlines
-uniform float u_mask;               // 0 = no aperture,  1 = full RGB stripe mask
-uniform float u_vignette;           // 0 = flat lit,     1 = full corner falloff
-uniform float u_corners;            // 0 = sharp corners, 1 = fully rounded CRT bezel
+uniform float u_curvature;          // 0..1 → curve 0..0.5
+uniform float u_corners;            // 0..1 → bezel radius 0..0.12
+uniform float u_colorOffset;        // 0..1 → color_offset 0..0.5 (chromatic aberration)
+uniform float u_maskBrightness;     // 0..1
+uniform int   u_maskType;           // 0=off, 1=Dots, 2=Aperture, 3=WideGrille, 4=WideSoftGrille, 5=Slot
 
-vec2 curve(vec2 uv, float strength) {
-  // Per-axis barrel distortion; strength scales how far the corners
-  // pull inward so we can lerp smoothly from flat to fully curved
-  // without ever sampling out of bounds.
-  uv = uv * 2.0 - 1.0;
-  vec2 off = uv.yx * uv.yx;
-  uv += uv * vec2(off.x / 5.0, off.y / 4.0) * strength;
-  return uv * 0.5 + 0.5;
+vec3 srgb_to_linear(vec3 col) {
+  return mix(pow((col + 0.055) / 1.055, vec3(2.4)), col / 12.92, lessThan(col, vec3(0.04045)));
+}
+vec3 linear_to_srgb(vec3 col) {
+  return mix((pow(col, vec3(1.0 / 2.4)) * 1.055) - 0.055, col * 12.92, lessThan(col, vec3(0.0031318)));
 }
 
-vec3 sampleScreen(vec2 uv) {
-  bool inside = uv.x >= u_screenRect.x && uv.x <= u_screenRect.z
-             && uv.y >= u_screenRect.y && uv.y <= u_screenRect.w;
-  if (inside) {
-    vec2 s = vec2(
-      (uv.x - u_screenRect.x) / (u_screenRect.z - u_screenRect.x),
-      (uv.y - u_screenRect.y) / (u_screenRect.w - u_screenRect.y)
-    );
-    return texture(u_tex, s).rgb;
+vec2 warp(vec2 uv, float aspect, float curve) {
+  uv -= 0.5;
+  uv.x /= aspect;
+  float w = dot(uv, uv) * curve - curve * 0.25;
+  uv /= 1.0 - w;
+  uv.x *= aspect;
+  return uv + 0.5;
+}
+
+// 3x2 subpixel sample with per-channel beam offset (chromatic aberration).
+// Input uv is in [0..1] of u_tex (i.e. of the Spectrum 256x192 screen).
+vec3 sampleScreen(vec2 uv, float colorOffset) {
+  ivec2 sz = textureSize(u_tex, 0);
+  vec2 puv = uv * vec2(sz);
+
+  int yU = int(puv.y + 0.5) - 1;
+  int yL = yU + 1;
+  float x = floor(puv.x);
+  float ax = x - 1.0;
+  float dx = x + 1.0;
+
+  int xa = clamp(int(ax), 0, sz.x - 1);
+  int xb = clamp(int(x),  0, sz.x - 1);
+  int xc = clamp(int(dx), 0, sz.x - 1);
+  int yu = clamp(yU, 0, sz.y - 1);
+  int yl = clamp(yL, 0, sz.y - 1);
+
+  vec3 ua = srgb_to_linear(texelFetch(u_tex, ivec2(xa, yu), 0).rgb);
+  vec3 ub = srgb_to_linear(texelFetch(u_tex, ivec2(xb, yu), 0).rgb);
+  vec3 uc = srgb_to_linear(texelFetch(u_tex, ivec2(xc, yu), 0).rgb);
+  vec3 la = srgb_to_linear(texelFetch(u_tex, ivec2(xa, yl), 0).rgb);
+  vec3 lb = srgb_to_linear(texelFetch(u_tex, ivec2(xb, yl), 0).rgb);
+  vec3 lc = srgb_to_linear(texelFetch(u_tex, ivec2(xc, yl), 0).rgb);
+
+  vec3 beam = vec3(puv.x - 0.5);
+  beam.r -= colorOffset;
+  beam.b += colorOffset;
+
+  vec3 wa = smoothstep(vec3(1.0), vec3(0.0), beam - ax);
+  vec3 wb = smoothstep(vec3(1.0), vec3(0.0), abs(beam - x));
+  vec3 wc = smoothstep(vec3(1.0), vec3(0.0), dx - beam);
+
+  vec3 upper = ua * wa + ub * wb + uc * wc;
+  vec3 lower = la * wa + lb * wb + lc * wc;
+
+  float sawtooth = smoothstep(0.0, 1.0, (puv.y + 0.5) - float(yU));
+  return mix(upper, lower, sawtooth);
+}
+
+// Returns rgb mask weights and average brightness (.w) for the selected pattern.
+vec4 generate_mask(vec2 fc) {
+  if (u_maskType == 1) {           // Dots — 2x2 R/G/B/black
+    ivec2 ic = ivec2(fc);
+    int idx = (ic.y * 2 + ic.x) & 3;
+    vec3 c = (idx == 0) ? vec3(1,0,0)
+           : (idx == 1) ? vec3(0,1,0)
+           : (idx == 2) ? vec3(0,0,1)
+                        : vec3(0,0,0);
+    return vec4(c, 0.25);
   }
-  int count = max(u_stripeCount, 1);
-  int idx = int(floor(uv.y * float(count)));
-  idx = clamp(idx, 0, count - 1);
-  return u_stripeColors[idx];
+  if (u_maskType == 2) {           // Aperture Grille — alternating G / R+B columns
+    int idx = int(mod(fc.x, 2.0));
+    return vec4(idx == 0 ? vec3(0,1,0) : vec3(1,0,1), 0.5);
+  }
+  if (u_maskType == 3) {           // Wide Grille — 4-wide R/G/B/black columns
+    int idx = int(mod(fc.x, 4.0));
+    vec3 c = (idx == 0) ? vec3(1,0,0)
+           : (idx == 1) ? vec3(0,1,0)
+           : (idx == 2) ? vec3(0,0,1)
+                        : vec3(0,0,0);
+    return vec4(c, 0.25);
+  }
+  if (u_maskType == 4) {           // Wide Soft Grille — 4-wide with leak
+    int idx = int(mod(fc.x, 4.0));
+    vec3 c = (idx == 0) ? vec3(1.0, 0.125, 0.0)
+           : (idx == 1) ? vec3(0.125, 1.0, 0.125)
+           : (idx == 2) ? vec3(0.0, 0.125, 1.0)
+                        : vec3(0.125, 0.0, 0.125);
+    return vec4(c, 0.3125);
+  }
+  if (u_maskType == 5) {           // Slot Mask — 4x4 staggered pattern
+    int ix = int(mod(fc.x, 4.0));
+    int iy = int(mod(fc.y, 4.0));
+    int idx = iy * 4 + ix;
+    vec3 c =
+      (idx ==  0) ? vec3(1,0,1) : (idx ==  1) ? vec3(0,1,0) : (idx ==  2) ? vec3(1,0,1) : (idx ==  3) ? vec3(0,1,0) :
+      (idx ==  4) ? vec3(0,0,1) : (idx ==  5) ? vec3(0,1,0) : (idx ==  6) ? vec3(1,0,0) : (idx ==  7) ? vec3(0,0,0) :
+      (idx ==  8) ? vec3(1,0,1) : (idx ==  9) ? vec3(0,1,0) : (idx == 10) ? vec3(1,0,1) : (idx == 11) ? vec3(0,1,0) :
+      (idx == 12) ? vec3(1,0,0) : (idx == 13) ? vec3(0,0,0) : (idx == 14) ? vec3(0,0,1) :                vec3(0,1,0);
+    return vec4(c, 0.375);
+  }
+  return vec4(0.5);                // 0 = Off — identity pass through apply_mask
+}
+
+// Phosphor-mask application with overflow spill for highlight preservation.
+vec3 apply_mask(vec3 col, vec2 fc) {
+  vec4 m = generate_mask(fc);
+  col *= mix(m.w, 1.0, u_maskBrightness);
+  vec3 target = col / m.w;
+  vec3 primary = clamp(target, 0.0, 1.0);
+  vec3 secondary = (target - primary) / (1.0 / m.w - 1.0);
+  return primary * m.rgb + secondary * (1.0 - m.rgb);
 }
 
 void main() {
   vec2 uv = v_uv;
-  if (u_enabled > 0.5 && u_curvature > 0.0) uv = curve(uv, u_curvature);
+  bool on = u_enabled > 0.5;
 
-  // CRT face mask. With u_corners = 0 this reduces to a strict [0,1]
-  // rectangle bounds check; raising it carves a rounded-rect bezel out
-  // of the curved face so the screen reads like a real CRT's rounded
-  // glass. Anti-aliased via screen-space derivatives so the edge stays
-  // crisp at any canvas size.
+  // Curvature warp first, so the bezel and content live in the same
+  // distorted coordinate space.
+  if (on && u_curvature > 0.0) uv = warp(uv, u_aspect, u_curvature * 0.5);
+
+  // Rounded bezel mask in unit-canvas space. Anti-aliased via fwidth.
   float bezelR = 0.12 * u_corners;
-  vec2 bq = abs(uv - 0.5) - 0.5 + bezelR;
+  vec2  bq     = abs(uv - 0.5) - 0.5 + bezelR;
   float bezelD = min(max(bq.x, bq.y), 0.0) + length(max(bq, vec2(0.0))) - bezelR;
   float bezelAA = max(fwidth(bezelD), 1e-5);
-  if (bezelD > bezelAA * 2.0) {
-    frag = vec4(0.0, 0.0, 0.0, 1.0);
-    return;
-  }
+  if (bezelD > bezelAA * 2.0) { frag = vec4(0.0, 0.0, 0.0, 1.0); return; }
   float bezelMask = 1.0 - smoothstep(-bezelAA, bezelAA, bezelD);
 
-  vec3 color = sampleScreen(uv);
+  bool inside = uv.x >= u_screenRect.x && uv.x <= u_screenRect.z
+             && uv.y >= u_screenRect.y && uv.y <= u_screenRect.w;
+  vec2 specUV = vec2(
+    (uv.x - u_screenRect.x) / (u_screenRect.z - u_screenRect.x),
+    (uv.y - u_screenRect.y) / (u_screenRect.w - u_screenRect.y)
+  );
 
-  if (u_enabled > 0.5) {
-    // Luminance-preserving scanline: bright peaks compensate for dark
-    // troughs so the per-pixel average tracks input luma. Dim pixels
-    // get a softer modulation than bright ones so dark scenes don't
-    // get crushed into invisibility. u_scanline lerps the whole
-    // contribution toward 1.0 (no modulation).
-    float py   = uv.y * u_outputSize.y;
-    float scan = 0.5 + 0.5 * sin(py * 3.14159);
-    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    float strength = mix(0.10, 0.32, 1.0 - luma) * u_scanline;
-    float scanMul = mix(1.0 + strength, 1.0 - strength, scan);
-    color *= scanMul;
-
-    // Aperture mask: three-phosphor stripe with the same averaging
-    // trick — boosted channel + dimmed neighbours roughly sum to the
-    // original colour. u_mask lerps the per-pixel mask back to white.
-    float px = uv.x * u_outputSize.x;
-    int mi = int(mod(px, 3.0));
-    vec3 baseMask;
-    if      (mi == 0) baseMask = vec3(1.15, 0.85, 0.85);
-    else if (mi == 1) baseMask = vec3(0.85, 1.15, 0.85);
-    else              baseMask = vec3(0.85, 0.85, 1.15);
-    color *= mix(vec3(1.0), baseMask, u_mask);
-
-    // Vignette toward the corners; strength lerps toward fully flat.
-    vec2 d = uv * 2.0 - 1.0;
-    float vigBase = clamp(1.0 - dot(d, d) * 0.18, 0.0, 1.0);
-    color *= mix(1.0, vigBase, u_vignette);
+  // CRT-off raw passthrough — keep the sharp-pixel look from before.
+  if (!on) {
+    vec3 c;
+    if (inside) {
+      c = texture(u_tex, specUV).rgb;
+    } else {
+      int count = max(u_stripeCount, 1);
+      int idx = clamp(int(floor(uv.y * float(count))), 0, count - 1);
+      c = u_stripeColors[idx];
+    }
+    frag = vec4(c * bezelMask, 1.0);
+    return;
   }
 
-  // Soft-blend the bezel edge so rounded corners anti-alias instead of
-  // showing a stair-step. With u_corners = 0 the mask is exactly 1.0
-  // inside the rect, so the legacy sharp-corner look is unchanged.
-  color *= bezelMask;
+  // CRT-on pipeline. Sample inside the screen rect with the full
+  // subpixel + chromatic-aberration reconstruction; outside, take the
+  // BORDER stripe colour (converted to linear so the mask math stays
+  // in the same space). Mask + sRGB encode applies to both so the
+  // phosphor grille reads across the whole glass.
+  vec3 linearCol;
+  if (inside) {
+    linearCol = sampleScreen(specUV, u_colorOffset * 0.5);
+  } else {
+    int count = max(u_stripeCount, 1);
+    int idx = clamp(int(floor(uv.y * float(count))), 0, count - 1);
+    linearCol = srgb_to_linear(u_stripeColors[idx]);
+  }
 
-  frag = vec4(color, 1.0);
+  linearCol = apply_mask(linearCol, gl_FragCoord.xy);
+  vec3 srgb = linear_to_srgb(linearCol);
+  frag = vec4(srgb * bezelMask, 1.0);
 }`;
 
     function compileShader(gl, type, src) {
@@ -663,17 +794,17 @@ void main() {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 192, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
 
       const u = {
-        tex:          gl.getUniformLocation(prog, "u_tex"),
-        screenRect:   gl.getUniformLocation(prog, "u_screenRect"),
-        stripeColors: gl.getUniformLocation(prog, "u_stripeColors"),
-        stripeCount:  gl.getUniformLocation(prog, "u_stripeCount"),
-        outputSize:   gl.getUniformLocation(prog, "u_outputSize"),
-        enabled:      gl.getUniformLocation(prog, "u_enabled"),
-        curvature:    gl.getUniformLocation(prog, "u_curvature"),
-        scanline:     gl.getUniformLocation(prog, "u_scanline"),
-        mask:         gl.getUniformLocation(prog, "u_mask"),
-        vignette:     gl.getUniformLocation(prog, "u_vignette"),
-        corners:      gl.getUniformLocation(prog, "u_corners"),
+        tex:            gl.getUniformLocation(prog, "u_tex"),
+        screenRect:     gl.getUniformLocation(prog, "u_screenRect"),
+        stripeColors:   gl.getUniformLocation(prog, "u_stripeColors"),
+        stripeCount:    gl.getUniformLocation(prog, "u_stripeCount"),
+        aspect:         gl.getUniformLocation(prog, "u_aspect"),
+        enabled:        gl.getUniformLocation(prog, "u_enabled"),
+        curvature:      gl.getUniformLocation(prog, "u_curvature"),
+        corners:        gl.getUniformLocation(prog, "u_corners"),
+        colorOffset:    gl.getUniformLocation(prog, "u_colorOffset"),
+        maskBrightness: gl.getUniformLocation(prog, "u_maskBrightness"),
+        maskType:       gl.getUniformLocation(prog, "u_maskType"),
       };
       gl.uniform1i(u.tex, 0);
 
@@ -718,6 +849,9 @@ void main() {
       const x0 = (w - cw) * 0.5;
       const y0 = (h - ch) * 0.5;
       glCtx.screenRect = [x0 / w, y0 / h, (x0 + cw) / w, (y0 + ch) / h];
+      // Aspect = canvas height/width — fed into warp() so the radial
+      // distortion stays circular regardless of viewport shape.
+      glCtx.aspect = h / w;
     }
 
     // Legacy 2D fallback path: original putImageData renderer with
@@ -863,13 +997,13 @@ void main() {
         gl.uniform4fv(u.screenRect, screenRect);
         gl.uniform3fv(u.stripeColors, stripeUniformBuf);
         gl.uniform1i(u.stripeCount, count);
-        gl.uniform2f(u.outputSize, canvas.width, canvas.height);
-        gl.uniform1f(u.enabled,   crtParams.enabled ? 1.0 : 0.0);
-        gl.uniform1f(u.curvature, crtParams.curvature);
-        gl.uniform1f(u.scanline,  crtParams.scanline);
-        gl.uniform1f(u.mask,      crtParams.mask);
-        gl.uniform1f(u.vignette,  crtParams.vignette);
-        gl.uniform1f(u.corners,   crtParams.corners);
+        gl.uniform1f(u.aspect,         glCtx.aspect);
+        gl.uniform1f(u.enabled,        crtParams.enabled ? 1.0 : 0.0);
+        gl.uniform1f(u.curvature,      crtParams.curvature);
+        gl.uniform1f(u.corners,        crtParams.corners);
+        gl.uniform1f(u.colorOffset,    crtParams.colorOffset);
+        gl.uniform1f(u.maskBrightness, crtParams.maskBrightness);
+        gl.uniform1i(u.maskType,       crtParams.maskType | 0);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
       } else {
         // Legacy 2D path.
